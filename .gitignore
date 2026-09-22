@@ -104,6 +104,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.python-runtime/
+releases/
 env/
 venv/
 ENV/
