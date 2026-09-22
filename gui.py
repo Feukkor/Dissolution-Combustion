@@ -5,10 +5,12 @@ import os
 import re
 import sys
 import time
+import math
+from functools import wraps
 # from tkinter import ttk
 from tkinter import *
 import tkinter.filedialog as filedialog
-from tkinter.messagebox import showinfo, showwarning
+from tkinter.messagebox import showinfo, showwarning, askyesno
 from tkinter.scrolledtext import ScrolledText
 # 第三方库
 from func_timeout import FunctionTimedOut
@@ -21,6 +23,9 @@ import ttkbootstrap as ttk
 # 自建库
 from expserial import EasySerial, getComPorts
 import maths as maths
+from data_loading import DataLoadError, load_raw, load_fit
+from acquisition_guide import AcquisitionGuide
+from rainbow_hint import RainbowHint
 from water_capacity_smooth import water_capacity_smooth
 from water_density_smooth import water_density_smooth
 
@@ -40,10 +45,35 @@ def getWaterCapacity(temp):
 
 # 从绝对路径获取文件名和扩展名
 def file_name_extension(absolute_path):
-    file_name = absolute_path.split("/")[-1]
-    extension = file_name.split(".")[-1]
-    file_name = file_name.split(".")[0]
-    return file_name, extension
+    file_name, extension = os.path.splitext(os.path.basename(absolute_path))
+    return file_name, extension.lstrip(".")
+
+def output_path(source, filename):
+    """生成同目录输出路径，并禁止输出覆盖输入（包括链接到同一文件）。"""
+    target = os.path.join(os.path.dirname(source), filename)
+    same_path = os.path.normcase(os.path.abspath(source)) == os.path.normcase(os.path.abspath(target))
+    same_file = os.path.exists(target) and os.path.samefile(source, target)
+    if same_path or same_file:
+        raise ValueError("输出文件与原始数据是同一个文件，请先将原始数据另存为其他名称后再处理。")
+    return target
+
+def explain_load_failure(method):
+    @wraps(method)
+    def wrapped(self):
+        try:
+            return method(self)
+        except DataLoadError as error:
+            showwarning(title="无法加载数据文件", message=str(error), parent=DATA_CONFIG["window"])
+        except Exception as error:
+            # Unexpected numerical/UI failures must not leave partial results saveable.
+            for name in ("button_save", "button_remake", "button_integrate"):
+                button = getattr(self, name, None)
+                if button is not None:
+                    button.config(state="disabled")
+            showwarning(title="无法加载数据文件",
+                        message=f"数据预处理或拟合失败，请检查数据是否适合当前模块（如有效点数、平台区间或数值范围）。\n详细原因：{type(error).__name__}: {error}",
+                        parent=DATA_CONFIG["window"])
+    return wrapped
 
 # 把字典按给定列名展开
 def dct2cols(cols, dct):
@@ -708,6 +738,7 @@ class Screen(ttk.Frame):
     def change_mode(self, *args):
         DATA_CONFIG['app'].change_mode()
 
+    @explain_load_failure
     def open_file(self):
         '''
         数据文件的格式如下：
@@ -720,40 +751,22 @@ class Screen(ttk.Frame):
         absolute_path = filedialog.askopenfilename(filetypes=[("CSV", ".csv"), ("TXT", ".txt"), ("ALL", "*.*")])
         if absolute_path == "":
             return
+        parameters_dict, data = load_raw(absolute_path, DATA_CONFIG["mode"].get())
+        loaded_csv = np.array(data, dtype=float)
+        smooth = maths.B_Spline(loaded_csv[:, 0], loaded_csv[:, 1], DATA_CONFIG["dx"])
         self.absolute_path = absolute_path
         self.file_name, self.extension = file_name_extension(self.absolute_path)
-        csv_skiprows = 1
         # 给entry上锁，同时清空相关信息
         self.spinEntries.set_states("disabled")
         self.strEntries.set_all_states("disabled")
         self.text_frame.clear()
         self.table_frame.clear()
         self.plot_frame.clear()
-        # 重置并读取参数
-        csv_all = np.loadtxt(self.absolute_path, delimiter=",", dtype=str)
-        row_count = 9 if DATA_CONFIG["mode"].get() == "溶解热" else 6
-        try:
-            # 尝试从输入文件读取参数
-            parameters = csv_all[0:row_count, 1].astype(float)
-            parameters_dict = {k: v.astype(float) for k, v in csv_all[0:row_count]}
-            csv_skiprows += len(parameters)
-        except:
-            pass
         # 锁定除file之外的所有button
         self.button_save.config(state="disabled")
         self.button_remake.config(state="disabled")
         self.button_integrate.config(state="disabled")
-        # 读取文件，加载变量
-        try:
-            DATA_CONFIG["csv"] = csv_all[csv_skiprows:].astype(float)
-        except:
-            self.text_frame.append(f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} 读取{self.absolute_path}失败，请检查文件格式\n")
-            showwarning(title="警告", message=f"读取{self.absolute_path}失败，请检查文件格式")
-            return
-        # 将csv中的数据按时间排序
-        self.csv_time = DATA_CONFIG["csv"][:, 0]
-        self.csv_time = np.argsort(self.csv_time)
-        DATA_CONFIG["csv"] = DATA_CONFIG["csv"][self.csv_time]
+        DATA_CONFIG["csv"] = loaded_csv
         DATA_CONFIG["csv_len"] = len(DATA_CONFIG["csv"])
         # 将csv中的数据加载到表格中
         for i in range(DATA_CONFIG["csv_len"]):
@@ -761,7 +774,7 @@ class Screen(ttk.Frame):
         # 更新文件名
         self.info_label.config(text=self.file_name)
         # 计算平滑曲线
-        self.smooth = maths.B_Spline(DATA_CONFIG["csv"][:, 0], DATA_CONFIG["csv"][:, 1], DATA_CONFIG["dx"])
+        self.smooth = smooth
         self.x_smooth = np.arange(DATA_CONFIG["csv"][:, 0].min(), DATA_CONFIG["csv"][:, 0].max(), DATA_CONFIG["dx"])
         self.y_smooth = self.smooth(self.x_smooth)
         # 更新输入框范围
@@ -776,13 +789,18 @@ class Screen(ttk.Frame):
             self.strEntries.set_value("dissolution_heat(kJ)", "")
         elif DATA_CONFIG["mode"].get() == "燃烧热":
             if DATA_CONFIG["combustion_mode"].get() == "constant":
-                self.strEntries.set_value("constant(J/K)", "")
-            elif DATA_CONFIG["combustion_mode"].get() == "combustible" or self.radiobutton_mode_selected.get() == "liquid":
+                self.strEntries.set_value("constant(J/K)", DATA_CONFIG.get("calorimeter_constant") or "")
+            elif DATA_CONFIG["combustion_mode"].get() in ("combustible", "liquid"):
                 self.strEntries.set_value("combustion_heat(J/g)", "")
     
     def save_file(self):
         result_file_name = "dissolution.csv" if DATA_CONFIG["mode"].get() == "溶解热" else "combustion.csv"
-        result_path = self.absolute_path.replace(self.file_name + '.' + self.extension, result_file_name)
+        try:
+            result_path = output_path(self.absolute_path, result_file_name)
+            image_path = output_path(self.absolute_path, self.file_name + ".png")
+        except ValueError as e:
+            showwarning(title="无法保存", message=str(e))
+            return
         # 如果与当前打开的csv文件同目录的文件夹下没有dissolution.csv文件
         if not os.path.exists(result_path):
             with open(result_path, mode="w", encoding="UTF-8", newline="") as f:
@@ -797,12 +815,12 @@ class Screen(ttk.Frame):
             self.text_frame.see("end")
             showwarning(title="警告", message=f"保存失败！请关闭{result_file_name}文件后再次尝试保存")
             return
-        self.plot_frame.save_fig(self.absolute_path.replace(self.extension, "png"))
+        self.plot_frame.save_fig(image_path)
         self.button_save.config(state="disabled")
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} {result_file_name}文件保存成功\n")
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} {self.file_name}.png保存成功\n")
         self.text_frame.see("end")
-        showinfo(title="提示", message=f"保存成功！\n{self.file_name}.png保存至{self.absolute_path.replace(self.file_name + '.' + self.extension, '')}\n计算数据保存至同目录下的{result_file_name}文件")
+        showinfo(title="提示", message=f"保存成功！\n图片：{image_path}\n计算数据：{result_path}")
 
     def remake_file(self):
         self.spinEntries.remake_file()
@@ -816,6 +834,7 @@ class Screen(ttk.Frame):
                 self.strEntries.set_states("readonly", ["constant(J/K)"])
                 self.strEntries.set_states("disabled", ["combustion_heat(J/g)"])
             elif DATA_CONFIG["combustion_mode"].get() == "combustible":
+                self.strEntries.set_states("normal", ["constant(J/K)"])
                 self.strEntries.set_states("readonly", ["combustion_heat(J/g)"])
     
     def change_entry(self):
@@ -823,7 +842,7 @@ class Screen(ttk.Frame):
             self.strEntries.set_value("dissolution_heat(kJ)", "")
         elif DATA_CONFIG["mode"].get() == "燃烧热":
             if DATA_CONFIG["combustion_mode"].get() == "constant":
-                self.strEntries.set_value("constant(J/K)", "")
+                self.strEntries.set_value("constant(J/K)", DATA_CONFIG.get("calorimeter_constant") or "")
             elif DATA_CONFIG["combustion_mode"].get() == "combustible" or self.radiobutton_mode_selected.get() == "liquid":
                 self.strEntries.set_value("combustion_heat(J/g)", "")
 
@@ -949,7 +968,7 @@ class Screen(ttk.Frame):
             self.parameters["T2_left"] = self.T2_left
             self.parameters["T2_right"] = self.T2_right
         elif DATA_CONFIG["mode"].get() == "燃烧热":
-            self.parameters["filename"] = f"{self.file_name}.{self.extension}"
+            self.parameters["filename"] = os.path.basename(self.absolute_path)
             self.parameters["T_left(K)"] = self.T1_left
             self.parameters["T_right(K)"] = self.T1_right
 
@@ -966,7 +985,12 @@ class Screen(ttk.Frame):
             maths.calculate_combustion(self.parameters, DATA_CONFIG["combustion_mode"].get())
             # 更新计算结果
             if DATA_CONFIG["combustion_mode"].get() == "constant":
-                self.strEntries.set_value("constant(J/K)", self.parameters["constant(J/K)"])
+                constant = self.parameters["constant(J/K)"]
+                if not math.isfinite(float(constant)):
+                    showwarning(title="无法计算量热计常数", message="计算结果不是有限数值，请检查温差及实验参数。此前的默认常数已保留。")
+                    return
+                DATA_CONFIG["calorimeter_constant"] = constant
+                self.strEntries.set_value("constant(J/K)", constant)
             elif DATA_CONFIG["combustion_mode"].get() == "combustible" or self.radiobutton_mode_selected.get() == "liquid":
                 self.strEntries.set_value("combustion_heat(J/g)", self.parameters["combustion_heat(J/g)"])
     
@@ -993,7 +1017,9 @@ class Screen1_Data(Screen):
     "5. 点击停止记录，停止记录数据。\n"\
     "6. 在文本框中输入实验参数后，保存数据。\n"\
     "7. 如数据丢失，可从与main.py同目录的tempfile.tmp中找到最近一次的记录数据。注意：溶解热的此数据需要处理后再使用。\n"\
-    "8. 为保证csv文档的易读性，建议使用纯英文字符命名csv文件。\n\n"
+    "8. 为保证csv文档的易读性，建议使用纯英文字符命名csv文件。\n"
+    "9. 温度满足阶段判据时，相应操作按钮显示滚动彩虹提示；仍需手动点击，不控制实验仪器。\n"
+    "10. 开始记录时需确认实验模式。请等待前30点基准建立后再加料或点火，信息区会显示基准建立提示。\n\n"
     entry_state = {
         "dissolution": [
             "room_temperature(K)",
@@ -1058,6 +1084,11 @@ class Screen1_Data(Screen):
 
     def __init__(self):
         super().__init__()
+        self.guide = AcquisitionGuide()
+        self.rainbow = RainbowHint()
+        self._read_job = None
+        self._confirming_start = False
+        self.during_measuring = False
         self.addModeButton(["数据记录", "溶解热", "燃烧热", "溶解热拟合"])
         self.arrangeLeft()
         self.addTableBox(["time(s)", "Delta_T(K)"], [50, 50], 0.35)
@@ -1158,9 +1189,44 @@ class Screen1_Data(Screen):
             self.comport.close()
         super().change_mode()
 
+    def destroy(self):
+        self.rainbow.clear()
+        if self._read_job is not None:
+            self.after_cancel(self._read_job)
+            self._read_job = None
+        if self.comport is not None:
+            self.comport.close()
+        if self.temp_file is not None:
+            self.temp_file.close()
+        super().destroy()
+
+    def reset_guidance(self):
+        self.guide.reset()
+        self.rainbow.clear()
+
+    def update_guidance(self, temperature):
+        previous_baseline = self.guide.baseline
+        previous_hint = self.guide.hint
+        hint = self.guide.feed(temperature)
+        if previous_baseline is None and self.guide.baseline is not None:
+            self.text_frame.append(f"阶段提示：已记录前30点平均温差 {self.guide.baseline:.3f} K，作为初始温度基准。\n")
+        buttons = {"start_recording": self.button_data_start, "start_heating": self.button_heat_start,
+                   "stop_heating": self.button_heat_stop, "stop_recording": self.button_data_stop}
+        messages = {"start_recording": "温度已稳定，可开始记录。",
+                    "start_heating": "已检测到降温后稳定，可开始加热。",
+                    "stop_heating": "温度已回升至设定范围，可停止加热。",
+                    "stop_recording": "温度已再次稳定，可停止记录。"}
+        if hint and not buttons[hint].instate(["disabled"]):
+            self.rainbow.show(buttons[hint])
+            if previous_hint != hint:
+                self.text_frame.append("阶段提示：" + messages[hint] + "\n")
+                self.text_frame.see("end")
+        else:
+            self.rainbow.clear()
     def get_port(self):
         if str(self.button_get_comport["state"]) != "normal":
             return
+        self.reset_guidance()
         # 禁用组件
         self.button_get_comport.config(state="disabled")
         self.button_data_start.config(state="disabled")
@@ -1210,6 +1276,7 @@ class Screen1_Data(Screen):
         self.button_get_comport.config(state="normal")
     
     def change_port(self, event):
+        self.reset_guidance()
         self.comport.close() if self.comport else None
         self.comport = None
         self.comport_name.set(event)
@@ -1237,54 +1304,80 @@ class Screen1_Data(Screen):
             self.text_frame.see("end")
 
     def change_measure_mode(self):
+        self.reset_guidance()
         self.set_entry_state()
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 当前选择{'燃烧热' if self.measure_mode.get() == 'combustion' else '溶解热'}模式\n")
         self.text_frame.see("end")
 
     def read_comport(self):
+        self._read_job = None
         try:
             # 读取串口数据
+            if self.comport is None:
+                return
             Delta_T = self.comport.read()
+            if Delta_T is None or not math.isfinite(Delta_T):
+                raise ValueError("未收到有效温差数据")
             self.end_time = time.time()
             Delta_t = self.end_time - self.start_time
             # 将数据写入临时文件和csv文件
-            try:
-                self.temp_file.write(f"{Delta_t:.3f},{Delta_T:.3f}\n")
-                self.temp_file.flush()
-                if self.during_measuring == 1:
-                    self.csv_data.append([f"{Delta_t:.3f}", f"{Delta_T:.3f}"])
-                self.table_frame.append((f"{Delta_t:.3f}", f"{Delta_T:.3f}"))
-                self.temp_Delta_t.append(Delta_t)
-                if len(self.temp_Delta_t) >= DATA_CONFIG["plot_max_points"]:
-                    self.temp_Delta_t = self.temp_Delta_t[-DATA_CONFIG["plot_max_points"]:]
-                self.temp_Delta_T.append(Delta_T)
-                if len(self.temp_Delta_T) >= DATA_CONFIG["plot_max_points"]:
-                    self.temp_Delta_T = self.temp_Delta_T[-DATA_CONFIG["plot_max_points"]:]
-            except TypeError:
+            self.temp_file.write(f"{Delta_t:.3f},{Delta_T:.3f}\n")
+            self.temp_file.flush()
+            if self.during_measuring:
                 self.csv_data.append([f"{Delta_t:.3f}", f"{Delta_T:.3f}"])
-                self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 串口读取数据失败，请检查串口连接状态。\n")
-                self.text_frame.see("end")
+            self.table_frame.append((f"{Delta_t:.3f}", f"{Delta_T:.3f}"))
+            self.temp_Delta_t.append(Delta_t)
+            self.temp_Delta_t = self.temp_Delta_t[-DATA_CONFIG["plot_max_points"]:]
+            self.temp_Delta_T.append(Delta_T)
+            self.temp_Delta_T = self.temp_Delta_T[-DATA_CONFIG["plot_max_points"]:]
+            self.update_guidance(Delta_T)
             self.plot_frame.clear()
             self.plot_frame.plot(self.temp_Delta_t, self.temp_Delta_T, color='#1F77B4')
             self.plot_frame.show()
 
         except BufferError:
+            self.guide.interrupt()
+            self.rainbow.clear()
             self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 串口读取数据失败，请检查串口连接状态。\n")
             self.text_frame.see("end")
         except IOError:
+            self.guide.interrupt()
+            self.rainbow.clear()
             self.comport.close()
             self.comport.open()
         except AttributeError as e:
             if self.comport is not None:
                 raise e
-        except FunctionTimedOut:
+        except (FunctionTimedOut, ValueError, TypeError):
+            self.guide.interrupt()
+            self.rainbow.clear()
             self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 串口读取数据失败，请检查串口连接状态。\n")
             self.text_frame.see("end")
-        # self.during_measuring = True
-        self.after(DATA_CONFIG["time_interval"], self.read_comport)
+        finally:
+            self._read_job = self.after(DATA_CONFIG["time_interval"], self.read_comport)
+    def explain_close_blocked(self):
+        message = ("正在采集数据，暂时不能关闭窗口。请先结束记录并保存数据，再关闭窗口。"
+                   if self.during_measuring else
+                   "本轮数据尚未保存，暂时不能关闭窗口。请先保存数据，再关闭窗口。")
+        showinfo(title="暂时无法关闭", message=message, parent=DATA_CONFIG["window"])
 
     def data_start(self):
-        DATA_CONFIG["window"].protocol("WM_DELETE_WINDOW", lambda: None)
+        if self._confirming_start:
+            return
+        mode = self.measure_mode.get()
+        mode_name = "燃烧热" if mode == "combustion" else "溶解热"
+        self._confirming_start = True
+        try:
+            confirmed = askyesno(title="确认数据记录模式",
+                                 message=f"当前数据记录模式：{mode_name}。\n确认开始记录吗？\n\n请先等待前30个数据点建立初始温度基准，再进行加料或点火。",
+                                 parent=DATA_CONFIG["window"])
+        finally:
+            self._confirming_start = False
+        if not confirmed:
+            return
+        self.guide.start(mode)
+        self.rainbow.clear()
+        DATA_CONFIG["window"].protocol("WM_DELETE_WINDOW", self.explain_close_blocked)
         self.temp_file.close()
         self.temp_file = open(os.path.join(DATA_CONFIG["py_path"], self.temp_file_name), "w", encoding="UTF-8")
         self.temp_file.write("time(s),Delta_T(K)\n")
@@ -1313,6 +1406,9 @@ class Screen1_Data(Screen):
         self.text_frame.see("end")
 
     def data_end(self):
+        self.guide.stop()
+        self.rainbow.clear()
+        self.during_measuring = False
         self.temp_file.write("stop recording\n")
         self.temp_file.flush()
         self.csv_state = False
@@ -1322,6 +1418,8 @@ class Screen1_Data(Screen):
         self.button_save.config(state="normal")
 
     def heat_start(self):
+        self.guide.start_heating()
+        self.rainbow.clear()
         self.t1 = f"{(time.time() - self.start_time):.3f}"
         self.temp_file.write(f"start heating at {self.t1} s\n")
         self.temp_file.flush()
@@ -1331,6 +1429,8 @@ class Screen1_Data(Screen):
         self.button_heat_stop.config(state="normal")
 
     def heat_end(self):
+        self.guide.stop_heating()
+        self.rainbow.clear()
         self.t2 = f"{(time.time() - self.start_time):.3f}"
         self.temp_file.write(f"stop heating at {self.t2} s\n")
         self.temp_file.flush()
@@ -1340,7 +1440,7 @@ class Screen1_Data(Screen):
         self.button_data_stop.config(state="normal")
 
     def data_save(self):
-        self.csv_path = filedialog.asksaveasfilename(title="保存数据", initialfile=f"{time.strftime('%Y%m%d%H%M%S', time.localtime())}{self.measure_mode.get()}data.csv", filetypes=[("CSV", ".csv")])
+        self.csv_path = filedialog.asksaveasfilename(title="保存数据", initialfile=f"{time.strftime('%Y%m%d%H%M%S', time.localtime())}{self.measure_mode.get()}data.csv", defaultextension=".csv", filetypes=[("CSV", ".csv")])
         if self.csv_path == "":
             # self.save_data()    # 递归调用，直到选择保存路径，但其间不能修改，所以注释掉
             return
@@ -1355,6 +1455,7 @@ class Screen1_Data(Screen):
         showinfo(title="提示", message=f"数据成功保存至{self.csv_path}")
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 数据保存成功\n")
         self.text_frame.see("end")
+        self.reset_guidance()
         self.temp_file.close()
         self.temp_file = open(os.path.join(DATA_CONFIG["py_path"], self.temp_file_name), "w", encoding="UTF-8")
         self.temp_file.write("time(s),Delta_T(K)\n")
@@ -1544,7 +1645,7 @@ class Screen3_Combustion(Screen):
                 "Nickel_heat(J/g)", "constant(J/K)",
                 "combustion_heat(J/g)"
             ],
-            DEFAULT_DATA_VALUE,
+            {**DEFAULT_DATA_VALUE, "constant(J/K)": DATA_CONFIG.get("calorimeter_constant") or ""},
             [("room_temperature(K)", "water_density(g/mL)", lambda temp: getWaterDensity(temp), ["room_temperature(K)"]),
                 ("room_temperature(K)", "water_capacity(J/gK)", lambda temp: getWaterCapacity(temp), ["room_temperature(K)"])],
             {
@@ -1568,6 +1669,7 @@ class Screen3_Combustion(Screen):
     def set_entry_state(self):
         if DATA_CONFIG["combustion_mode"].get() == "constant":
             # 清空燃烧热计算结果，禁止编辑量热计常数和燃烧热
+            self.strEntries.set_value("constant(J/K)", DATA_CONFIG.get("calorimeter_constant") or "")
             self.strEntries.set_value("combustion_heat(J/g)", "")
             self.strEntries.set_states("readonly", ["constant(J/K)"])
             self.strEntries.set_states("disabled", ["combustion_heat(J/g)"])
@@ -1581,6 +1683,7 @@ class Screen3_Combustion(Screen):
         elif DATA_CONFIG["combustion_mode"].get() == "combustible":
             # 清空燃烧热计算结果，禁止编辑燃烧热，允许编辑量热计常数
             self.strEntries.set_value("combustion_heat(J/g)", "")
+            self.strEntries.set_states("normal", ["constant(J/K)"])
             self.strEntries.set_states("readonly", ["combustion_heat(J/g)"])
             # 更新label
             self.strEntries.entries_table["combustible_mass(g)"].label.config(text="样品+棉线(g)")
@@ -1624,35 +1727,25 @@ class Screen4_Fit(Screen):
         self.button_save = ttk.Button(tmp, text="保存(Ctrl-S)", command=self.save_file, state="disabled")
         self.button_save.place(relx=0, rely=0, relwidth=1, relheight=1)
 
+    @explain_load_failure
     def open_file(self):
         absolute_path = filedialog.askopenfilename(filetypes=[("CSV", ".csv"), ("TXT", ".txt"), ("ALL", "*.*")])
         if absolute_path == "":
             return
+        dissolution_parameters = load_fit(absolute_path)
+        regression = maths.dissolution_heat_regression(dissolution_parameters)
+        if not all(np.all(np.isfinite(value)) for value in regression):
+            raise DataLoadError("拟合结果包含无穷大或无效数值，数据不足以确定拟合参数，请检查各轮质量和热效应。")
+        dissolution_test_data = maths.dissolution_heat_test(regression[2], regression[3])
         self.absolute_path = absolute_path
         self.button_save.config(state="disabled")
         # 更新text_result
         self.text_frame.clear()
         self.text_frame.append(self.INFORM_TEXT)
         self.file_name, self.extension = file_name_extension(self.absolute_path)
-        with open(self.absolute_path, "r", encoding="utf-8") as file_obj:
-            reader = csv.reader(file_obj)
-            titles = []
-            parameters = {}
-            for row in reader:
-                if not parameters:
-                    titles = row.copy()
-                    for title in row:
-                        parameters[title] = []
-                else:
-                    for title, val in zip(titles, row):
-                        parameters[title].append(val)
-        dissolution_csv = [list(map(float, row)) for row in zip(*[parameters[title] for title in ["water_volume(mL)", "water_density(g/mL)", "solute_mass(g)", "solute_molarmass(g/mol)", "dissolution_heat(kJ)"]])]
-        len_csv = len(dissolution_csv)
-        dissolution_parameters = []
-        for i in range(len_csv):
-            dissolution_parameters.append([dissolution_csv[i][0], dissolution_csv[i][1], dissolution_csv[i][2], dissolution_csv[i][3], dissolution_csv[i][4]])
-        self.Qs, self.n, self.Qs0, self.a, self.stddev_Qs0, self.stddev_a, self.r_square = maths.dissolution_heat_regression(dissolution_parameters)
-        self.dissolution_test_data = maths.dissolution_heat_test(self.Qs0, self.a)
+        len_csv = len(dissolution_parameters)
+        self.Qs, self.n, self.Qs0, self.a, self.stddev_Qs0, self.stddev_a, self.r_square = regression
+        self.dissolution_test_data = dissolution_test_data
         # 更新table_frame
         self.table_frame.clear()
         for i in range(len_csv):
@@ -1690,7 +1783,13 @@ class Screen4_Fit(Screen):
 
     def save_file(self):
         try:
-            with open(self.absolute_path.replace("." + self.extension, "_fitted_data.csv"), "w", encoding="UTF-8", newline="") as f:
+            result_path = output_path(self.absolute_path, self.file_name + "_fitted_data.csv")
+            image_path = output_path(self.absolute_path, self.file_name + ".png")
+        except ValueError as e:
+            showwarning(title="无法保存", message=str(e))
+            return
+        try:
+            with open(result_path, "w", encoding="UTF-8", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["n0", "Qs(kJ/mol)"])
                 n0_Qs = np.stack((self.n, self.Qs), axis=1)
@@ -1705,11 +1804,11 @@ class Screen4_Fit(Screen):
             self.text_frame.see("end")
             showwarning(title="警告", message=f"保存失败！请关闭{self.file_name}_fitted_data.csv文件后再次尝试保存")
             return
-        self.plot_frame.save_fig(self.absolute_path.replace(self.extension, "png"))
+        self.plot_frame.save_fig(image_path)
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} {self.file_name}_fitted_data.csv文件保存成功\n")
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} {self.file_name}.png保存成功\n")
         self.text_frame.see("end")
-        showinfo(title="提示", message=f"保存成功！\n{self.file_name}.png保存至{self.absolute_path.replace(self.file_name + '.' + self.extension, '')}\n计算数据保存至同目录下的dissolution_fitted_data.csv文件")  
+        showinfo(title="提示", message=f"保存成功！\n图片：{image_path}\n计算数据：{result_path}")
 
 class App:
     """
@@ -1728,6 +1827,8 @@ class App:
                  dpi: int=600,
                  py_path: str=os.path.dirname(os.path.abspath(__file__))
                  ):
+        # Session-only default: opening a new application never reuses old calibration.
+        DATA_CONFIG["calorimeter_constant"] = None
         DATA_CONFIG["app"] = self
         DATA_CONFIG["dx"] = dx
         DATA_CONFIG["time_interval"] = time_interval

@@ -13,6 +13,7 @@
   - [2.2 包安装](#22-包安装)
   - [2.3 启动程序](#23-启动程序)
   - [2.4 打包可执行文件](#24-打包可执行文件)
+  - [2.5 功能验证](#25-功能验证)
 - [3. 程序各部分功能](#3-程序各部分功能)
   - [3.1 water\_capacity\_smooth.py](#31-water_capacity_smoothpy)
   - [3.2 water\_density\_smooth.py](#32-water_density_smoothpy)
@@ -155,6 +156,26 @@ pipenv run pyinstaller --hidden-import=gui --hidden-import=expserial --hidden-im
 其中， ``--hidden-import``参数将所有没有在main.py中提及的module和所有自行编写的module打包，``--icon``参数指定了打包后文件的图标，``-F``指定程序打包为一整个文件，``-w``或 ``--noconsole``指定打包后的文件运行时不显示命令行界面。
 
 打包后的文件在dist文件夹中。
+
+## 2.5 功能验证
+
+在项目目录运行不需要图形界面或仪器的回归测试：
+
+```shell
+python -m unittest discover -s tests -v
+```
+
+测试覆盖原始文件保护、数据格式校验、采集阶段判断、按钮提示、模式确认和量热计常数的运行期缓存。
+
+安装项目依赖且有可用桌面环境时，可额外运行真实 Tk 控件的模拟数据验证：
+
+```shell
+python tests/gui_smoke.py
+```
+
+该验证在临时目录生成模拟数据，检查采集按钮和彩虹动画、溶解热和燃烧热计算、溶解热拟合、CSV/PNG 输出和异常文件提示，不连接串口仪器。
+
+验证环境使用 Python 3.12、NumPy 1.26.4、SciPy 1.13.1、Matplotlib 3.8.4、Pillow 10.4.0 和 ttkbootstrap 1.10.1。原有计算代码使用 `scipy.integrate.simps`，绘图使用 `tostring_rgb`；在未迁移这些接口前，应选用 SciPy < 1.14、Matplotlib < 3.10 的兼容版本。这里不改变原项目的依赖声明或发布流程。
 
 # 3. 程序各部分功能
 
