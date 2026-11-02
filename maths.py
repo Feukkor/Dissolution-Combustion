@@ -2,7 +2,11 @@
 # 第三方库
 import numpy as np
 from scipy import optimize
-from scipy.integrate import simps
+try:
+    from scipy.integrate import simps
+except ImportError:
+    # scipy >= 1.14 改名 simpson，兼容新旧版本
+    from scipy.integrate import simpson as simps
 from scipy.interpolate import BSpline, splrep
 
 # 线性回归
@@ -77,7 +81,7 @@ def Reynolds(csv, Start1: int, End1: int, Start2: int, End2: int, dx: float) -> 
     in which:
         k = k2 - k1
         b = b2 - b1
-        total_integral = \int_{End1}^{Start2}(k2 * x + b2 - smooth(x)) dx + 1/2 * k * x_csv.min()^2 + b * x_csv.min()
+        total_integral = \\int_{End1}^{Start2}(k2 * x + b2 - smooth(x)) dx + 1/2 * k * x_csv.min()^2 + b * x_csv.min()
     """
     def integral_function(x, k2, b2, smooth):
         return k2 * x + b2 - smooth(x)
@@ -337,45 +341,202 @@ def calculate_combustion(parameters: dict, code: str):
         combustion_heat = Q_x / combustible_mass    # 单位J/g
         parameters["combustion_heat(J/g)"] = f"{combustion_heat:.1f}"
 
-# 寻找初始起止点
-def find_start_end_point(csv, code: str, time_lower_limit: int or float, time_upper_limit: int or float, std_limit: float): # 建议时间下限30s，时间上限40s，标准差上限0.01
-    # 第一列为index，第二列为标准差
-    standard_deviation = []
-    points = []
-    count = 4 if code == "燃烧热" else 6
-    platform = True
-    start_index = 0
-    end_index = 1
-    if csv is None: return 
-    while end_index < len(csv):
-        time_range = csv[end_index][0] - csv[start_index][0]
-        if time_range > time_upper_limit:
-            start_index += 1
-        elif time_range < time_lower_limit:
-            end_index += 1
-        else:
-            standard_deviation.append([end_index, np.std(csv[start_index:end_index, 1])])
-            end_index += 1
-    # 寻找起止点
-    points.append(0)
-    for i in standard_deviation:
-        index, std = i
-        if std <= std_limit and platform == False:
-            points.append(index)
-            platform = True
-            count -= 1
-        elif std > std_limit and platform == True:
-            """
-            # 会导致非正常数据无法显示图象，暂时删除
-            # 排除延后效应的影响
-            time_now = csv[index][0]
-            while time_now - csv[index][0] < time_lower_limit / 1.0:    # 1.0可调节，越大对延后的校正越弱
-                index -= 1
-            """
-            points.append(index)
-            platform = False
-            count -= 1
-        if count == 2:
+# 寻找初始起止点（线性扩展法，替代原滑动窗口标准差状态机）
+def _sigma_resid(csv, start, end):
+    """对 csv[start:end+1] 做最小二乘线性拟合，返回残差标准差 σ_res（噪声水平）。"""
+    x = csv[start:end + 1, 0]
+    y = csv[start:end + 1, 1]
+    if len(x) < 3:
+        return 0.0
+    k, b = np.polyfit(x, y, 1)
+    res = y - (k * x + b)
+    return res.std(ddof=2)
+
+def find_start_end_point_linear_ext(csv, sigma_mult=3.5, margin_pts=5, min_len_s=20.0):
+    """燃烧热推荐选点：线性扩展法。
+
+    原理：雷诺校正要求前后两个拟合区间都"线性良好"。从曲线两端（前期平台 /
+    后期稳态）向主升温段方向逐点扩展，用拟合残差标准差 σ_res 是否超过
+    σ0 的 sigma_mult 倍（σ0 为前期噪声水平）判断"线性性"何时被破坏，
+    边界处各内缩 margin_pts 点，保证选点既不进入主升温段（第二阶段）、
+    又尽量保留足够多的点。
+
+    返回 [0, End1, Start2, len-1]。
+    """
+    if csv is None:
+        return [0, 0, 0, 0]
+    n = len(csv)
+    if n < 50:
+        return [0, 0, n - 1, n - 1]
+    step = np.median(np.diff(csv[:, 0]))
+    min_len = max(3, int(round(min_len_s / step)))
+    sigma0 = _sigma_resid(csv, 0, min(35, n - 1))
+    thr = max(sigma_mult * sigma0, 1e-5)
+    # ---- 前期拟合区间终点 End1：从 0 向后扩展 ----
+    coarse = 5
+    End1 = None
+    for e in range(min_len, n, coarse):
+        if _sigma_resid(csv, 0, e) > thr:
+            End1 = e
             break
-    points = points + [len(csv) - i for i in range(count - 1, 1, -1)]
-    return points
+    if End1 is None:
+        End1 = n - 1
+    else:
+        lo = max(min_len, End1 - coarse)
+        for ee in range(lo, End1 + 1):
+            if _sigma_resid(csv, 0, ee) > thr:
+                End1 = ee
+                break
+    End1 = max(min_len, End1 - margin_pts)
+    # ---- 后期拟合区间起点 Start2：从末尾向前扩展 ----
+    Start2 = None
+    for s in range(n - 1 - min_len, 0, -coarse):
+        if _sigma_resid(csv, s, n - 1) > thr:
+            Start2 = s
+            break
+    if Start2 is None:
+        Start2 = 0
+    else:
+        hi = min(n - 1 - min_len, Start2 + coarse)
+        for ss in range(hi, Start2 - 1, -1):
+            if _sigma_resid(csv, ss, n - 1) > thr:
+                Start2 = ss
+                break
+    Start2 = min(n - 1 - min_len, Start2 + margin_pts)
+    if Start2 < End1 + min_len:
+        Start2 = min(n - 1 - min_len, End1 + min_len)
+    return [0, End1, Start2, n - 1]
+
+def find_start_end_point_dissolution_linear_ext(csv, sigma_mult=3.5, margin_pts=5, min_len_s=20.0, k_mult=2.5, t_heat_start=None, plateau_len_s=60.0):
+    """溶解热推荐选点：线性扩展法（3 区间 6 点）。
+
+    曲线形态：P1 前基线 → 溶解吸热急降段 → P2 谷底平台 → 电加热回升段 → P3 后基线。
+    返回 [0, E1, S2, E2, S3, len-1]，其中：
+      E1 前平台终点 / S3 后平台起点：从两端向中间扩展，用拟合残差标准差
+        σ_res 是否超过 σ0 的 sigma_mult 倍（σ0 为前期噪声水平）判断"线性性"
+        被破坏的位置（同燃烧热线性扩展法）；
+      E2 谷底平台右端：优先取实验记录的加热开始时间 t_heat_start（秒）
+        之前 margin_pts 点；t1 缺失或不合理时，才退回以中间段全局最低点
+        p_min（谷底）为锚、向右扩展"线性良好"窗口块的数据判据。
+      S2 谷底平台左端：不再从 p_min 向两侧扩展（那样会把降温尾段的圆弧
+        一起包进来，G4 曾因此把 S2 选到 166.8 s、仍在降温段，R² 只有 0.22），
+        改为从 E2 向前取 plateau_len_s 秒的固定基线窗口，并以真实谷底和
+        急降段为下界。固定窗口既保证选点数量，又不以最大化 R² 为目标而
+        把区间缩到几个点。
+
+    原滑动窗口标准差状态机对噪声阈值过敏感，会把"温漂起点"当升温起点、
+    把弛豫段误判为未平稳，且选点会进入主变化段（如溶解急降段），故弃用。
+    """
+    if csv is None:
+        return [0, 0, 0, 0, 0, 0]
+    n = len(csv)
+    if n < 60:
+        return [0, 0, 0, 0, n - 1, n - 1]
+    step = np.median(np.diff(csv[:, 0]))
+    min_len = max(3, int(round(min_len_s / step)))
+    sigma0 = _sigma_resid(csv, 0, min(35, n - 1))
+    thr = max(sigma_mult * sigma0, 1e-5)
+    coarse = 5
+    # ---- E1: 前平台终点，从 0 向后扩展 ----
+    E1 = None
+    for e in range(min_len, n, coarse):
+        if _sigma_resid(csv, 0, e) > thr:
+            E1 = e
+            break
+    if E1 is None:
+        E1 = n - 1
+    else:
+        lo = max(min_len, E1 - coarse)
+        for ee in range(lo, E1 + 1):
+            if _sigma_resid(csv, 0, ee) > thr:
+                E1 = ee
+                break
+    E1 = max(min_len, E1 - margin_pts)
+    # ---- S3: 后平台起点，从末尾向前扩展 ----
+    S3 = None
+    for s in range(n - 1 - min_len, E1 + 2 * min_len, -coarse):
+        if _sigma_resid(csv, s, n - 1) > thr:
+            S3 = s
+            break
+    if S3 is None:
+        S3 = min(n - 1 - min_len, E1 + 2 * min_len)
+    else:
+        hi = min(n - 1 - min_len, S3 + coarse)
+        for ss in range(hi, S3 - 1, -1):
+            if _sigma_resid(csv, ss, n - 1) > thr:
+                S3 = ss
+                break
+    S3 = min(n - 1 - min_len, S3 + margin_pts)
+    if S3 < E1 + 2 * min_len:
+        S3 = min(n - 1 - min_len, E1 + 2 * min_len)
+    # ---- 斜率阈值：由前后基线斜率估计 ----
+    k_front = np.polyfit(csv[0:E1 + 1, 0], csv[0:E1 + 1, 1], 1)[0]
+    k_back = np.polyfit(csv[S3:n, 0], csv[S3:n, 1], 1)[0]
+    k_thr = k_mult * max(abs(k_front), abs(k_back), 1e-5)
+    # ---- 谷底锚点：中间段全局最低点 ----
+    mid = csv[E1:S3 + 1, 1]
+    p_min = E1 + int(np.argmin(mid))
+    # ---- 平台判据：窗口 [i, i+min_len] 内 σ_res ≤ thr 且 |斜率| ≤ k_thr ----
+    def _plat_good(i):
+        j = min(n - 1, i + min_len)
+        return _sigma_resid(csv, i, j) <= thr and abs(
+            np.polyfit(csv[i:j + 1, 0], csv[i:j + 1, 1], 1)[0]) <= k_thr
+    # ---- E2: 谷底平台右端 ----
+    # 优先直接采用实验记录的加热开始时间 t1：平台右端取 t1 前 margin_pts
+    # 点。加热开始后温度有热滞后，但不同设备/记录方式可能有偏差，保守地
+    # 停在 t1 之前比事后判断“开始爬升”更稳。只有 t1 缺失或不合理时，才
+    # 退回“从谷底向右扩展线性窗口”的数据判据。
+    i = p_min
+    e_right = None
+    while i <= S3 - min_len - 1 and _plat_good(i):
+        e_right = i
+        i += 1
+    E2 = (e_right + min_len) if e_right is not None else S3 - 1
+    if t_heat_start is not None:
+        t1_idx = int(np.argmin(np.abs(csv[:, 0] - t_heat_start)))
+        if t1_idx > E1 + 2 * min_len:
+            E2 = t1_idx - margin_pts
+    E2 = min(S3 - 1, max(E2, E1 + 2 * min_len))
+    # ---- S2: 从 E2 向前取固定长度的低温平台基线 ----
+    # 旧方法从谷底向两侧扩展“线性窗口”，会沿着谷底圆弧一路回到降温尾段
+    # （G4 的 S2=166.8 s，整段跨过谷底，R² 仅 0.22）。改为固定窗口：
+    # 选点数量由 plateau_len_s 保证，不靠最大化 R² 来缩短区间。
+    window_s = max(float(plateau_len_s), float(min_len_s))
+    S2 = int(np.searchsorted(csv[:, 0], csv[E2, 0] - window_s, side="left"))
+    S2 = max(E1 + min_len, S2)
+    # 真实谷底（E2 处已明显高于最低点）时，左端不得早于谷底，避免把
+    # “先降后升”的圆弧包进拟合区间；若曲线一直单调下降（如 G1），则
+    # 谷底就在 E2 附近，不能用它作下界，否则会只剩几个点。
+    if csv[E2, 1] - csv[p_min, 1] > max(5 * sigma0, 2e-3):
+        S2 = max(S2, p_min)
+    # 急降段保护：固定窗口若越过溶解吸热的急降段，用局部斜率把左端推到
+    # 急降段之后。k_thr 由前后基线斜率估计，正常平台温漂不会超过它。
+    last_steep = None
+    for i in range(E1 + 1, E2 - min_len + 1):
+        j = min(n - 1, i + min_len)
+        slope = np.polyfit(csv[i:j + 1, 0], csv[i:j + 1, 1], 1)[0]
+        if abs(slope) > k_thr:
+            last_steep = i
+    if last_steep is not None:
+        S2 = max(S2, last_steep + margin_pts)
+    S2 = min(S2, E2 - min_len)
+    # ---- 钳制顺序与最小段长 ----
+    if S2 < E1 + min_len:
+        S2 = E1 + min_len
+    if E2 < S2 + min_len:
+        E2 = min(S3 - 1, S2 + min_len)
+    if S3 < E2 + min_len:
+        S3 = min(n - 1 - min_len, E2 + min_len)
+    return [0, E1, S2, E2, S3, n - 1]
+
+def find_start_end_point(csv, code: str, time_lower_limit: int or float, time_upper_limit: int or float, std_limit: float, t_heat_start: float or None = None): # 建议时间下限30s，时间上限40s，标准差上限0.01
+    if code == "燃烧热":
+        # 燃烧热模式：改用线性扩展法（原滑动窗口标准差状态机对噪声阈值过敏感，
+        # 前期温漂/主升温弛豫会使选点临界抖动，且会进入主升温段，见 find_start_end_point_linear_ext 注释）
+        return find_start_end_point_linear_ext(csv)
+    # 溶解热模式：改用线性扩展法（3 区间 6 点），原理见
+    # find_start_end_point_dissolution_linear_ext 注释（原状态机选点会进入
+    # 溶解急降段/加热段，拟合区间不满足雷诺校正要求的"基线线性良好"）。
+    # t_heat_start（加热开始时间，秒）由 GUI 从数据文件参数行传入，用于确定
+    # 谷底平台右端 E2；低温平台左端 S2 由 E2 前 plateau_len_s 秒的固定窗口确定。
+    return find_start_end_point_dissolution_linear_ext(csv, t_heat_start=t_heat_start)
