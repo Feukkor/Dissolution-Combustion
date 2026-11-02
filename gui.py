@@ -20,6 +20,9 @@ import numpy as np
 from PIL import Image as pilImage
 from PIL import ImageTk
 import ttkbootstrap as ttk
+# 兼容 ttkbootstrap 新旧版本：2.x 中类名为 Panedwindow（tkinter 同款大小写），1.x 为 PanedWindow
+if not hasattr(ttk, "PanedWindow") and hasattr(ttk, "Panedwindow"):
+    ttk.PanedWindow = ttk.Panedwindow
 # 自建库
 from expserial import EasySerial, getComPorts
 import maths as maths
@@ -256,6 +259,19 @@ class TextWidget(ttk.Frame):
         self.textbox.see(pos)
 
 
+def _canvas_to_rgb(canvas):
+    """将 matplotlib canvas 图像转为 PIL RGB 图像。
+
+    matplotlib 3.11+ 的 tostring_argb() 返回 ARGB 字节串（A 通道在最前），
+    若按 RGBA 直接交给 PIL 解析会造成通道错位：蓝色变红色、绿色变品红、
+    橙色变黄色。这里取后三个字节作为 RGB。
+    """
+    w, h = canvas.get_width_height()
+    if hasattr(canvas, "tostring_argb"):
+        arr = np.frombuffer(canvas.tostring_argb(), dtype=np.uint8).reshape((h, w, 4))
+        return pilImage.fromarray(np.ascontiguousarray(arr[:, :, 1:4]))
+    return pilImage.frombytes("RGB", (w, h), canvas.tostring_rgb())
+
 class PlotWidget(ttk.Frame):
     def __init__(self, master, xlabel, ylabel, **kwargs):
         super().__init__(master, **kwargs)
@@ -285,7 +301,8 @@ class PlotWidget(ttk.Frame):
         self.canvas = FigureCanvasTkAgg(self.P, DATA_CONFIG["window"])
         self.canvas.draw()
         self.canvas.draw_idle()
-        PIL_image = pilImage.frombytes('RGB', self.canvas.get_width_height(), self.canvas.tostring_rgb())
+        # 兼容 matplotlib 新旧版本：新版本 tostring_rgb 改名 tostring_argb（ARGB，A 在前）
+        PIL_image = _canvas_to_rgb(self.canvas)
         tk_image = ImageTk.PhotoImage(PIL_image)
         self.bind("<Configure>", self.resize_image)
         self.canvas_plot = ttk.Label(self, image=tk_image)
@@ -303,7 +320,8 @@ class PlotWidget(ttk.Frame):
         self.f.legend()
     def show(self):
         self.canvas.draw()
-        PIL_image = pilImage.frombytes("RGB", self.canvas.get_width_height(), self.canvas.tostring_rgb())
+        # 兼容 matplotlib 新旧版本：新版本 tostring_rgb 改名 tostring_argb（ARGB，A 在前）
+        PIL_image = _canvas_to_rgb(self.canvas)
         tk_image = ImageTk.PhotoImage(PIL_image)
         self.canvas_plot.configure(image=tk_image)
         self.canvas_plot.image = tk_image
@@ -315,7 +333,8 @@ class PlotWidget(ttk.Frame):
         new_width, new_height = frame_width / self.P.dpi, frame_height / self.P.dpi
         self.P.set_size_inches(new_width, new_height, forward=True)
         self.canvas.draw()
-        PIL_image = pilImage.frombytes('RGB', self.canvas.get_width_height(), self.canvas.tostring_rgb())
+        # 兼容 matplotlib 新旧版本：新版本 tostring_rgb 改名 tostring_argb（ARGB，A 在前）
+        PIL_image = _canvas_to_rgb(self.canvas)
         tk_image = ImageTk.PhotoImage(PIL_image)
         self.canvas_plot.config(image=tk_image)
         self.canvas_plot.image = tk_image
@@ -558,7 +577,7 @@ class SpinEntriesWidget(ttk.Frame):
 
     def remake_file(self):
         # 更新输入框的值
-        self.start_end_points_list = maths.find_start_end_point(DATA_CONFIG["csv"], DATA_CONFIG["mode"].get(), DATA_CONFIG['time_lower_limit'], DATA_CONFIG['time_upper_limit'], DATA_CONFIG['std_limit'])
+        self.start_end_points_list = maths.find_start_end_point(DATA_CONFIG["csv"], DATA_CONFIG["mode"].get(), DATA_CONFIG['time_lower_limit'], DATA_CONFIG['time_upper_limit'], DATA_CONFIG['std_limit'], DATA_CONFIG.get("parameters", {}).get("t1(s)"))
         if self.start_end_points_list is None:
             showwarning("警告", "未找到平台期")
             return
@@ -753,6 +772,7 @@ class Screen(ttk.Frame):
         if absolute_path == "":
             return
         parameters_dict, data = load_raw(absolute_path, DATA_CONFIG["mode"].get())
+        DATA_CONFIG["parameters"] = parameters_dict  # 供自动选点读取 t1(s)（加热开始时间）钳制谷底平台右端
         loaded_csv = np.array(data, dtype=float)
         smooth = maths.B_Spline(loaded_csv[:, 0], loaded_csv[:, 1], DATA_CONFIG["dx"])
         self.absolute_path = absolute_path
@@ -869,7 +889,7 @@ class Screen(ttk.Frame):
         # 清空图像
         self.plot_frame.clear()
         # 绘制起止点和散点图
-        self.plot_frame.scatter(DATA_CONFIG["csv"][:, 0], DATA_CONFIG["csv"][:, 1], label="$\Delta T$ - $t$ data", **PLOT_CONFIG["MainScatter"])
+        self.plot_frame.scatter(DATA_CONFIG["csv"][:, 0], DATA_CONFIG["csv"][:, 1], label=r"$\Delta T$ - $t$ data", **PLOT_CONFIG["MainScatter"])
         self.plot_frame.scatter(DATA_CONFIG["csv"][self.start_end_points_dict["Start 1"], 0], DATA_CONFIG["csv"][self.start_end_points_dict["Start 1"], 1], label="linear fit 1 endpoints", **PLOT_CONFIG["Scatter1"])
         self.plot_frame.scatter(DATA_CONFIG["csv"][self.start_end_points_dict["End 1"], 0], DATA_CONFIG["csv"][self.start_end_points_dict["End 1"], 1], **PLOT_CONFIG["Scatter1"])
         self.plot_frame.scatter(DATA_CONFIG["csv"][self.start_end_points_dict["Start 2"], 0], DATA_CONFIG["csv"][self.start_end_points_dict["Start 2"], 1], label="linear fit 2 endpoints", **PLOT_CONFIG["Scatter2"])
@@ -885,7 +905,7 @@ class Screen(ttk.Frame):
             except:
                 pass
         # 绘制平滑曲线
-        self.plot_frame.plot(self.x_smooth, self.y_smooth, label="$\Delta T$ - $t$ curve", **PLOT_CONFIG["MainLine"])
+        self.plot_frame.plot(self.x_smooth, self.y_smooth, label=r"$\Delta T$ - $t$ curve", **PLOT_CONFIG["MainLine"])
         # 绘制线性回归
         self.y1 = self.k1 * self.x_smooth + self.b1
         self.y2 = self.k2 * self.x_smooth + self.b2
@@ -1096,7 +1116,7 @@ class Screen1_Data(Screen):
         self.addInfoLabel()
         self.addEntries()
         self.addTextBox(15)
-        self.addPlotBox(65, "$t$ (s)", "$\Delta T$ (K)")
+        self.addPlotBox(65, "$t$ (s)", r"$\Delta T$ (K)")
         self.init_states()
         self.initShortCut()
         self.read_comport()
@@ -1516,7 +1536,7 @@ class Screen2_Dissolution(Screen):
         self.addInfoLabel()
         self.addEntries()
         self.addTextBox(15)
-        self.addPlotBox(65, "$t$ (s)", "$\Delta T$ (K)")
+        self.addPlotBox(65, "$t$ (s)", r"$\Delta T$ (K)")
         self.initShortCut()
         self.plot_frame.show()
     def arrangeLeft(self):
@@ -1617,7 +1637,7 @@ class Screen3_Combustion(Screen):
         self.addInfoLabel()
         self.addEntries()
         self.addTextBox(15)
-        self.addPlotBox(65, "$t$ (s)", "$\Delta T$ (K)")
+        self.addPlotBox(65, "$t$ (s)", r"$\Delta T$ (K)")
         self.initShortCut()
     def arrangeLeft(self):
         tmp = ttk.Frame(self.left_frame, **FLAT_SUBFRAME_CONFIG)
@@ -1842,6 +1862,27 @@ class App:
         DATA_CONFIG["width_height_inches"] = width_height_inches
         DATA_CONFIG["dpi"] = dpi
         DATA_CONFIG["window"] = ttk.Window(themename="sandstone", title=WINDOW_TITLE)
+        # 复刻作者 exe 的按钮配色：Bootswatch Sandstone primary #325D88 深蓝底白字。
+        # 本机 ttkbootstrap 2.2.6 的 sandstone 默认按钮渲染为浅灰，需自定义样式覆盖。
+        try:
+            _style = DATA_CONFIG["window"].style
+            _style.configure("TButton",
+                             background="#325D88", foreground="white",
+                             bordercolor="#325D88", lightcolor="#3A6A9B", darkcolor="#2A4E6E",
+                             focuscolor="#325D88")
+            _style.map("TButton",
+                       background=[("disabled", "#ebebeb"), ("active", "#446E9B"), ("pressed", "#446E9B")],
+                       foreground=[("disabled", "#a0a0a0"), ("active", "white"), ("pressed", "white")])
+            # 模式切换下拉框（ttk.OptionMenu 使用 TMenubutton 样式），同样复刻深蓝
+            _style.configure("TMenubutton",
+                             background="#325D88", foreground="white",
+                             bordercolor="#325D88", lightcolor="#3A6A9B", darkcolor="#2A4E6E",
+                             focuscolor="#325D88", arrowcolor="white")
+            _style.map("TMenubutton",
+                       background=[("disabled", "#ebebeb"), ("active", "#446E9B"), ("pressed", "#446E9B")],
+                       foreground=[("disabled", "#a0a0a0"), ("active", "white"), ("pressed", "white")])
+        except Exception:
+            pass
         try:
             if sys.platform.startswith('darwin'):
                 # Mac系统

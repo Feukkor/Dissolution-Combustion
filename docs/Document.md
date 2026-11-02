@@ -277,13 +277,14 @@ pipenv run pyinstaller --hidden-import=gui --hidden-import=expserial --hidden-im
 - 参数 `code`：可取 `"constant"`或 `"combustible"`，表明是计算量热计常数还是燃烧热
 - 返回值：参数字典 `parameters`。若 `code`为 `"constant"`，则原参数字典中，`constant(J/K)`一项对应的值变动为计算出的量热计常数，单位(J/K)；若 `code`为 `"combustible"`，则原参数字典中，`combustion_heat(J/g)`一项对应的值变动为计算出的燃烧热，单位(J/g)。
 
-函数**find_start_end_point(csv, code, time_lower_limit, time_upper_limit, std_limit)**：寻找线性回归区间推荐起止点
+函数**find_start_end_point(csv, code, time_lower_limit, time_upper_limit, std_limit, t_heat_start=None)**：寻找线性回归区间推荐起止点
 
 - 参数 `csv`：待回归数据
-- 参数 `code`：可取 `"dissolution"`或 `"combustion"`，表明是溶解热数据还是燃烧热数据
-- 参数 `time_lower_limit`,`time_upper_limit`：线性回归区间时间长度下上限
-- 参数 `std_limit`：线性回归区间内可容许的标准差上限
-- 返回值：一个整数列表，列表内容为从前到后的推荐起止点
+- 参数 `code`：可取 `"溶解热"`或 `"燃烧热"`，表明是溶解热数据还是燃烧热数据
+- 参数 `time_lower_limit`,`time_upper_limit`,`std_limit`：为兼容旧接口保留；当前线性扩展法不再使用
+- 参数 `t_heat_start`：实验记录的加热开始时间，单位(s)，用于确定溶解热低温平台的右端
+- 返回值：一个整数列表，列表内容为从前到后的推荐起止点。溶解热返回 6 个点，燃烧热返回 4 个点
+- 说明：溶解热的低温平台不再从谷底向两侧扩展，而是取平台右端（加热开始前）向前 `plateau_len_s`（默认 60 s）的固定窗口，并以真实谷底和急降段为下界，避免选点落回降温段，同时保证足够的拟合点数
 
 ## 3.5 gui.py
 
