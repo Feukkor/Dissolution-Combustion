@@ -1028,19 +1028,15 @@ class Screen1_Data(Screen):
     """
     数据采集界面
     """
-    INFORM_TEXT = ""\
-    "数据记录模式使用说明\n"\
-    "0. 点击左上角按钮切换模式\n"\
-    "1. 选择正确的记录模式。\n"\
-    "2. 点击刷新串口，程序将自动识别有数据输入的串口，并开始读取数据。如有多个有数据输入的串口，请自行选择正确的一个。\n"\
-    "3. 点击开始记录，开始记录数据。\n"\
-    "4. 如选择溶解热记录模式，在开始加热和结束加热时点击相应按钮。\n"\
-    "5. 点击停止记录，停止记录数据。\n"\
-    "6. 在文本框中输入实验参数后，保存数据。\n"\
-    "7. 如数据丢失，可从与main.py同目录的tempfile.tmp中找到最近一次的记录数据。注意：溶解热的此数据需要处理后再使用。\n"\
-    "8. 为保证csv文档的易读性，建议使用纯英文字符命名csv文件。\n"
-    "9. 温度满足阶段判据时，相应操作按钮显示滚动彩虹提示；仍需手动点击，不控制实验仪器。\n"
-    "10. 开始记录时需确认实验模式。请等待前30点基准建立后再加料或点火，信息区会显示基准建立提示。\n\n"
+    INFORM_TEXT = (
+        "数据记录模式使用说明\n"
+        "1. 选择实验模式，刷新串口并连接仪器。\n"
+        "2. 建议等待记录前基线提示，再开始记录；前30点用于本轮参考温差，并非热平衡证明。\n"
+        "3. 溶解热实验在实际开启、关闭加热器时点击开始加热、停止加热，以记录时间。\n"
+        "4. 开始加热及停止记录的彩虹建议需通过线性基线检查与持续确认；状态区会显示等待原因。\n"
+        "5. 温度重新变化或采样中断时会撤销建议；按钮和快捷键仍可手动操作，不控制仪器。\n"
+        "6. 结束记录后填写实验参数并保存；异常退出时可检查程序目录的 tempfile.tmp。\n\n"
+    )
     entry_state = {
         "dissolution": [
             "room_temperature(K)",
@@ -1115,6 +1111,16 @@ class Screen1_Data(Screen):
         self.addTableBox(["time(s)", "Delta_T(K)"], [50, 50], 0.35)
         self.addInfoLabel()
         self.addEntries()
+        self.guidance_frame = ttk.Frame(self.right_paned)
+        self.guidance_label = ttk.Label(self.guidance_frame, text=self.guide.status,
+                                        anchor="w", justify="left", wraplength=600,
+                                        padding=(8, 6))
+        self.guidance_label.pack(fill="both", expand=True)
+        self.guidance_frame.bind("<Configure>", lambda event:
+                                 self.guidance_label.configure(wraplength=max(180, event.width - 16)))
+        self.right_paned.add(self.guidance_frame, weight=0)
+        self._guide_log_key = None
+        self._guide_log_time = None
         self.addTextBox(15)
         self.addPlotBox(65, "$t$ (s)", r"$\Delta T$ (K)")
         self.init_states()
@@ -1224,19 +1230,19 @@ class Screen1_Data(Screen):
     def reset_guidance(self):
         self.guide.reset()
         self.rainbow.clear()
+        self._guide_log_key = None
+        self._guide_log_time = None
+        self.render_guidance()
 
-    def update_guidance(self, temperature):
-        previous_baseline = self.guide.baseline
-        previous_hint = self.guide.hint
-        hint = self.guide.feed(temperature)
-        if previous_baseline is None and self.guide.baseline is not None:
-            self.text_frame.append(f"阶段提示：已记录前30点平均温差 {self.guide.baseline:.3f} K，作为初始温度基准。\n")
+    def render_guidance(self, previous_hint=None):
+        hint = self.guide.hint
         buttons = {"start_recording": self.button_data_start, "start_heating": self.button_heat_start,
                    "stop_heating": self.button_heat_stop, "stop_recording": self.button_data_stop}
-        messages = {"start_recording": "温度已稳定，可开始记录。",
-                    "start_heating": "已检测到降温后稳定，可开始加热。",
-                    "stop_heating": "温度已回升至设定范围，可停止加热。",
-                    "stop_recording": "温度已再次稳定，可停止记录。"}
+        messages = {"start_recording": "记录前基线已符合设定判据，可开始记录。",
+                    "start_heating": "溶解后基线已通过持续确认，可考虑开始加热。",
+                    "stop_heating": "已达到目标温差，可停止加热；随后请继续记录末期基线。",
+                    "stop_recording": "末期基线已通过持续确认，可考虑停止记录。"}
+        self.guidance_label.configure(text=self.guide.status)
         if hint and not buttons[hint].instate(["disabled"]):
             self.rainbow.show(buttons[hint])
             if previous_hint != hint:
@@ -1244,6 +1250,24 @@ class Screen1_Data(Screen):
                 self.text_frame.see("end")
         else:
             self.rainbow.clear()
+        if previous_hint and not hint:
+            self.text_frame.append("阶段提示：当前数据不再符合条件，已撤销操作建议，请继续观察。\n")
+        now = time.monotonic()
+        if (self._guide_log_key != self.guide.status_key or self._guide_log_time is None
+                or now - self._guide_log_time >= 15):
+            self.text_frame.append("基线观察：" + self.guide.status + "\n")
+            self.text_frame.see("end")
+            self._guide_log_key = self.guide.status_key
+            self._guide_log_time = now
+
+    def update_guidance(self, temperature, timestamp=None):
+        previous_baseline = self.guide.baseline
+        previous_hint = self.guide.hint
+        self.guide.feed(temperature, timestamp)
+        if previous_baseline is None and self.guide.baseline is not None:
+            self.text_frame.append(f"阶段提示：前{self.guide.config.baseline_points}个连续有效点的参考温差为 {self.guide.baseline:.3f} K；参考均值不代表体系已热平衡。\n")
+        self.render_guidance(previous_hint)
+
     def get_port(self):
         if str(self.button_get_comport["state"]) != "normal":
             return
@@ -1359,11 +1383,13 @@ class Screen1_Data(Screen):
         except BufferError:
             self.guide.interrupt()
             self.rainbow.clear()
+            self.render_guidance()
             self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 串口读取数据失败，请检查串口连接状态。\n")
             self.text_frame.see("end")
         except IOError:
             self.guide.interrupt()
             self.rainbow.clear()
+            self.render_guidance()
             self.comport.close()
             self.comport.open()
         except AttributeError as e:
@@ -1372,6 +1398,7 @@ class Screen1_Data(Screen):
         except (FunctionTimedOut, ValueError, TypeError):
             self.guide.interrupt()
             self.rainbow.clear()
+            self.render_guidance()
             self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 串口读取数据失败，请检查串口连接状态。\n")
             self.text_frame.see("end")
         finally:
@@ -1390,7 +1417,7 @@ class Screen1_Data(Screen):
         self._confirming_start = True
         try:
             confirmed = askyesno(title="确认数据记录模式",
-                                 message=f"当前数据记录模式：{mode_name}。\n确认开始记录吗？\n\n请先等待前30个数据点建立初始温度基准，再进行加料或点火。",
+                                 message=f"当前数据记录模式：{mode_name}。\n确认开始记录吗？\n\n建议先等待记录前基线提示。开始后前30个连续有效点用于参考温差；加料或点火前还需至少30秒线性数据，等待初期温漂参考建立。参考值不代表已热平衡。",
                                  parent=DATA_CONFIG["window"])
         finally:
             self._confirming_start = False
@@ -1425,6 +1452,7 @@ class Screen1_Data(Screen):
         self.table_frame.clear()
         self.text_frame.append(f"{time.strftime('%Y.%m.%d %H:%M:%S', time.localtime())} 开始记录\n")
         self.text_frame.see("end")
+        self.render_guidance()
 
     def data_end(self):
         self.guide.stop()
@@ -1437,6 +1465,7 @@ class Screen1_Data(Screen):
         self.text_frame.see("end")
         self.button_data_stop.config(state="disabled")
         self.button_save.config(state="normal")
+        self.render_guidance()
 
     def heat_start(self):
         self.guide.start_heating()
@@ -1448,6 +1477,7 @@ class Screen1_Data(Screen):
         self.text_frame.see("end")
         self.button_heat_start.config(state="disabled")
         self.button_heat_stop.config(state="normal")
+        self.render_guidance()
 
     def heat_end(self):
         self.guide.stop_heating()
@@ -1459,6 +1489,7 @@ class Screen1_Data(Screen):
         self.text_frame.see("end")
         self.button_heat_stop.config(state="disabled")
         self.button_data_stop.config(state="normal")
+        self.render_guidance()
 
     def data_save(self):
         self.csv_path = filedialog.asksaveasfilename(title="保存数据", initialfile=f"{time.strftime('%Y%m%d%H%M%S', time.localtime())}{self.measure_mode.get()}data.csv", defaultextension=".csv", filetypes=[("CSV", ".csv")])

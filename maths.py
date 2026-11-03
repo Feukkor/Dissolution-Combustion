@@ -2,11 +2,7 @@
 # 第三方库
 import numpy as np
 from scipy import optimize
-try:
-    from scipy.integrate import simps
-except ImportError:
-    # scipy >= 1.14 改名 simpson，兼容新旧版本
-    from scipy.integrate import simpson as simps
+from scipy.integrate import simpson
 from scipy.interpolate import BSpline, splrep
 
 # 线性回归
@@ -87,7 +83,7 @@ def Reynolds(csv, Start1: int, End1: int, Start2: int, End2: int, dx: float) -> 
         return k2 * x + b2 - smooth(x)
     k = k2 - k1
     b = b2 - b1
-    integral = simps(integral_function(x_smooth, k2, b2, smooth), x_smooth)
+    integral = simpson(integral_function(x_smooth, k2, b2, smooth), x=x_smooth)
     total_integral = integral + 1/2 * k * x_csv.min() ** 2 + b * x_csv.min()
     x0_1, x0_2 = np.roots([1/2 * k, b, -total_integral])
     x0, S1, S2 = 0.0, 0.0, 0.0
@@ -97,8 +93,8 @@ def Reynolds(csv, Start1: int, End1: int, Start2: int, End2: int, dx: float) -> 
         x0 = x0_2
     if x0 != 0.0:
         # 计算S1和S2
-        S1 = simps(integral_function(x_smooth[x_smooth <= x0], k1, b1, smooth), x_smooth[x_smooth <= x0])
-        S2 = simps(integral_function(x_smooth[x_smooth >= x0], k2, b2, smooth), x_smooth[x_smooth >= x0])
+        S1 = simpson(integral_function(x_smooth[x_smooth <= x0], k1, b1, smooth), x=x_smooth[x_smooth <= x0])
+        S2 = simpson(integral_function(x_smooth[x_smooth >= x0], k2, b2, smooth), x=x_smooth[x_smooth >= x0])
     return x0, abs(S1), abs(S2)
 
 """

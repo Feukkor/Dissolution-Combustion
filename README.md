@@ -1,15 +1,29 @@
 # Dissolution-Combustion
 
-北京大学-化学与分子工程学院-中级物理化学实验项目
+北京大学-化学与分子工程学院-中级物理化学实验项目。
 
-基于[@ZhaoZh02](https://github.com/ZhaoZh02)的[数据处理程序](https://github.com/ZhaoZh02/ReynoldsCorrection)和[@WaterKing201030](https://github.com/WaterKing201030)的[数据采集程序](https://github.com/WaterKing201030/SWC-IID-Combust)。
+基于 [@ZhaoZh02](https://github.com/ZhaoZh02) 的 [数据处理程序](https://github.com/ZhaoZh02/ReynoldsCorrection) 和 [@WaterKing201030](https://github.com/WaterKing201030) 的 [数据采集程序](https://github.com/WaterKing201030/SWC-IID-Combust)。本项目采用 GPL-3.0 协议，欢迎 Issue 和 Pull Request。
 
-安装驱动程序后，启动软件即可开始使用，点击这里下载[最新版本v2.2.0](https://github.com/ZhaoZh02/Dissolution-Combustion/releases/tag/v2.2.0)。
+## v2.2.5
 
-如需教学使用，点击这里查看[操作手册](https://github.com/ZhaoZh02/Dissolution-Combustion/blob/main/manual/Manual.md)和[操作演示视频](https://github.com/ZhaoZh02/Dissolution-Combustion/releases/download/v2.2.0/Dissolution_Combustion.mp4)。
+包含文件导入与原始数据保护、基于数据的实验阶段操作提示、会话内量热计常数记忆、更好的拟合区间自动选点算法。完整记录见 [history.md](history.md)。
 
-如需改进软件，点击这里查看[说明文档](https://github.com/ZhaoZh02/Dissolution-Combustion/blob/main/docs/Document.md)。
+Windows 用户可运行发布附件中的 `Dissolution-Combustion-v2.2.5.exe`，无需安装 Python。请将程序放在可写目录；连接仪器需要相应 USB 串口驱动。
 
-欢迎提出Issue或Pull request。
+- [操作手册](manual/Manual.md)
+- [平台时长、判据及提前操作的影响](docs/LinearBaseline-Guidance.md)
+- [Windows 构建与验证](docs/Windows-Build.md)
+- [自动选点的已知边界限制](docs/PointSelection-Review.md)
+- [程序设计说明](docs/Document.md)
 
-本项目在GPL-3.0协议下开源。
+## 源码运行
+
+在包含 `main.py` 的目录执行：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-windows.txt
+.\.venv\Scripts\python.exe main.py
+```
+
+其他平台可安装 `requirements.txt` 中的运行依赖。

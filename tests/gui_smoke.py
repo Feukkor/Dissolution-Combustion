@@ -33,8 +33,13 @@ def run():
                 root.update()
                 screen = gui.DATA_CONFIG["screen"]
                 screen.button_data_start.configure(state="normal")
-                for _ in range(50):
-                    screen.update_guidance(1.0)
+                sample_time = 0.0
+                def feed_values(values):
+                    nonlocal sample_time
+                    for value in values:
+                        sample_time += 0.55
+                        screen.update_guidance(value, sample_time)
+                feed_values([1.0] * 170)
                 assert screen.rainbow.canvas is not None
                 phase = screen.rainbow.phase
                 until = time.monotonic() + 0.3
@@ -44,16 +49,22 @@ def run():
                 assert screen.rainbow.phase != phase
                 screen.temp_file = (folder / "tempfile.tmp").open("w", encoding="utf-8")
                 screen.data_start()
-                for value in [1.0] * 30 + [0.2] * 85:
-                    screen.update_guidance(value)
+                feed_values([1.0] * 30 + [0.2] * 335)
+                assert screen.rainbow.button is screen.button_heat_start
+                assert "满足设定判据" in screen.guidance_label.cget("text")
+                feed_values([0.25])
+                assert screen.rainbow.canvas is None
+                assert "扰动" in screen.guidance_label.cget("text")
+                feed_values([0.2] * 550)
                 assert screen.rainbow.button is screen.button_heat_start
                 screen.heat_start()
-                for _ in range(5):
-                    screen.update_guidance(0.7)
+                feed_values([0.7] * 5)
                 assert screen.rainbow.button is screen.button_heat_stop
                 screen.heat_end()
-                for _ in range(80):
-                    screen.update_guidance(0.9)
+                feed_values([0.9] * 100)
+                assert screen.rainbow.canvas is None
+                assert "积累" in screen.guidance_label.cget("text")
+                feed_values([0.9] * 230)
                 assert screen.rainbow.button is screen.button_data_stop
                 screen.data_end()
                 print("PASS real Tk recording controls and animated gradient")

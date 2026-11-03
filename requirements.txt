@@ -1,7 +1,7 @@
 func_timeout
-matplotlib
+matplotlib>=3.7,<3.10
 numpy
 Pillow
 pyserial
-scipy
-ttkbootstrap
+scipy>=1.11,<1.15
+ttkbootstrap>=1.10,<1.11

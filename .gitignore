@@ -134,3 +134,10 @@ dmypy.json
 tmp/*
 *.tmp
 *.zip
+# Local installer investigation artifacts
+.local-debug/
+
+# Local-only experiment and simulator workspace
+/results/
+/simulator/
+/app/v2.2.5-test.1/
