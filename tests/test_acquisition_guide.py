@@ -1,6 +1,5 @@
 import io
 import math
-import os
 from pathlib import Path
 import sys
 import time
@@ -8,108 +7,341 @@ import unittest
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from acquisition_guide import AcquisitionGuide
+from acquisition_guide import AcquisitionGuide, GuideConfig, LinearStability
 from test_file_safety import load_function
 
 
-def feed(guide, values):
-    for value in values:
-        hint = guide.feed(value)
-    return hint
+class Replay:
+    def __init__(self, guide=None, step=0.55):
+        self.guide = guide or AcquisitionGuide()
+        self.time = 0.0
+        self.step = step
+
+    def feed(self, value):
+        self.time += self.step
+        return self.guide.feed(value, self.time)
+
+    def repeat(self, value, count):
+        for _ in range(count):
+            hint = self.feed(value)
+        return hint
+
+    def baseline(self, mode="dissolution"):
+        self.guide.start(mode)
+        self.repeat(1.0, 30)
+        return self
+
+
+def detector(step=0.55, duration=400, fn=lambda t: 1.0, start=0.0):
+    c = GuideConfig()
+    d = LinearStability(c, c.stable_window_s, c.stable_confirm_s)
+    first = None
+    for i in range(int(duration / step) + 1):
+        t = i * step
+        result = d.feed(start + t, fn(t))
+        if result.ready and first is None:
+            first = t
+    return d, first
+
+
+class LinearStabilityTests(unittest.TestCase):
+    def test_flat_baseline_needs_full_window_and_confirmation(self):
+        for dt in (0.5, 0.55, 0.6):
+            with self.subTest(dt=dt):
+                d, first = detector(step=dt, duration=185)
+                self.assertGreaterEqual(first, 180 - 1e-8)
+                self.assertLessEqual(first, 180 + 2*dt + 1e-8)
+                self.assertEqual(d.result.residual_rms_k, 0)
+
+    def test_irregular_timestamps_and_clock_origin_do_not_change_decision(self):
+        c = GuideConfig()
+        for origin in (0, 1_000_000):
+            d = LinearStability(c, 120, 60)
+            t = origin
+            first = None
+            for i in range(360):
+                t += (0.5, 0.6, 0.55)[i % 3]
+                result = d.feed(t, 1.0)
+                if result.ready and first is None:
+                    first = t - origin - 0.5
+            self.assertGreaterEqual(first, 180 - 1e-8)
+            self.assertLess(first, 182)
+
+    def test_many_samples_in_short_time_cannot_skip_wait(self):
+        d, first = detector(step=0.1, duration=70)
+        self.assertIsNone(first)
+        self.assertEqual(d.result.reason, "collecting")
+
+    def test_small_constant_drift_and_quantization_are_allowed(self):
+        for sign in (-1, 1):
+            d, first = detector(fn=lambda t: round(1 + sign*.004*t/60, 3))
+            self.assertIsNotNone(first)
+            self.assertTrue(d.result.ready)
+
+    def test_perfect_line_with_excessive_drift_is_not_equilibrium_advice(self):
+        for sign in (-1, 1):
+            d, first = detector(fn=lambda t: 1 + sign*.06*t/60)
+            self.assertIsNone(first)
+            self.assertEqual(d.result.reason, "drift")
+            self.assertLess(d.result.residual_rms_k, 1e-12)
+
+    def test_curvature_rejected_even_with_small_drift_and_residuals(self):
+        c = GuideConfig()
+        d = LinearStability(c, 120, 60)
+        # Local slopes remain below 0.01 K/min, but change across the window.
+        for i in range(241):
+            t = i*.5
+            result = d.feed(t, 0.5*1.2e-6*(t-60)**2)
+        self.assertEqual(result.reason, "curvature")
+        self.assertLess(result.residual_rms_k, c.max_residual_rms_k)
+        self.assertGreater(result.slope_change_k_min, c.max_slope_change_k_min)
+
+    def test_noise_rejected_without_drift(self):
+        d, first = detector(fn=lambda t: 1 + .004 * (-1 if round(t/.55) % 2 else 1))
+        self.assertIsNone(first)
+        self.assertEqual(d.result.reason, "noise")
+
+    def test_normal_sensor_noise_can_pass(self):
+        d, first = detector(fn=lambda t: 1 + .0008*math.sin(t*2.1))
+        self.assertIsNotNone(first)
+        self.assertTrue(d.result.ready)
+
+    def test_exponential_tail_rejected_at_old_early_hint_then_can_settle(self):
+        d, first = detector(duration=185, fn=lambda t: 1-.2*math.exp(-t/180))
+        self.assertIsNone(first)
+        d, first = detector(duration=900, fn=lambda t: 1-.2*math.exp(-t/180))
+        self.assertIsNotNone(first)
+        self.assertGreater(first, 180)
+        self.assertTrue(d.result.ready)
+
+    def test_spike_revokes_and_requires_fresh_confirmation(self):
+        d, _ = detector(step=.5, duration=190)
+        self.assertTrue(d.result.ready)
+        self.assertFalse(d.feed(190.5, 1.1).ready)
+        self.assertIsNone(d.qualified_since)
+        self.assertEqual(d.result.reason, "disturbance")
+        for i in range(1, 359):
+            result = d.feed(190.5+i*.5, 1.0)
+            self.assertFalse(result.ready)
+        for i in range(359, 365):
+            result = d.feed(190.5+i*.5, 1.0)
+        self.assertTrue(result.ready)
+
+    def test_short_window_catches_new_trend(self):
+        d, _ = detector(step=.5, duration=190)
+        for i in range(1, 41):
+            result = d.feed(190+i*.5, 1 + .015*(i*.5)/60)
+        self.assertFalse(result.ready)
+        self.assertIn(result.reason, ("drift", "curvature", "disturbance"))
+
+    def test_gap_cannot_count_towards_confirmation(self):
+        d, _ = detector(step=.5, duration=150)
+        self.assertEqual(d.result.reason, "confirming")
+        result = d.feed(220, 1.0)
+        self.assertEqual(result.reason, "collecting")
+        self.assertEqual(result.span_s, 0)
+        self.assertIsNone(d.qualified_since)
+
+    def test_invalid_config_fails_early(self):
+        for kwargs in ({"stable_window_s": 0}, {"minimum_points": 2},
+                       {"max_gap_s": math.nan}, {"recent_window_s": 90}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                GuideConfig(**kwargs)
 
 
 class GuideTests(unittest.TestCase):
-    def baseline(self, mode="dissolution"):
-        guide = AcquisitionGuide()
-        guide.start(mode)
-        feed(guide, [1.0] * 30)
-        self.assertEqual(guide.baseline, 1.0)
-        return guide
+    def test_idle_hint_is_time_based_and_revoked_on_new_change(self):
+        r=Replay()
+        self.assertIsNone(r.repeat(1.0, 160))
+        self.assertEqual(r.repeat(1.0, 10), "start_recording")
+        self.assertIsNone(r.feed(1.1))
 
-    def test_idle_full_window_and_latched_hint(self):
-        g = AcquisitionGuide()
-        self.assertIsNone(feed(g, [1.0] * 49))
-        self.assertEqual(g.feed(1.02), "start_recording")
-        self.assertEqual(g.feed(1.5), "start_recording")
-        g.interrupt()
-        self.assertIsNone(feed(g, [1.0] * 49))
-        self.assertEqual(g.feed(1.0), "start_recording")
+    def test_full_dissolution_and_final_sequence(self):
+        r=Replay().baseline()
+        self.assertEqual(r.guide.baseline, 1.0)
+        self.assertIsNone(r.repeat(0.2, 100))
+        self.assertEqual(r.repeat(0.2, 235), "start_heating")
+        r.guide.start_heating()
+        self.assertIsNone(r.repeat(.69, 8))
+        self.assertEqual(r.repeat(.7, 5), "stop_heating")
+        r.guide.stop_heating()
+        self.assertIsNone(r.repeat(.9, 100))
+        self.assertEqual(r.repeat(.9, 230), "stop_recording")
+        self.assertIsNone(r.feed(1.0))
+        r.guide.stop()
+        self.assertIsNone(r.repeat(.9, 400))
 
-    def test_unstable_idle(self):
-        g = AcquisitionGuide()
-        self.assertIsNone(feed(g, [1.0, 1.021] * 100))
+    def test_both_dissolution_and_combustion_wait_and_revoke(self):
+        for mode, value, hint in (("dissolution", .2, "start_heating"),
+                                  ("combustion", 2., "stop_recording")):
+            with self.subTest(mode=mode):
+                r=Replay().baseline(mode)
+                self.assertIsNone(r.repeat(value, 85))
+                self.assertEqual(r.repeat(value, 250), hint)
+                self.assertIsNone(r.feed(value+.1))
+                self.assertIsNone(r.guide.hint)
 
-    def test_baseline_uses_only_first_thirty_recorded_points(self):
-        g = AcquisitionGuide()
-        feed(g, [10.0] * 60)
-        g.start("dissolution")
-        feed(g, [1.0] * 15 + [1.02] * 14)
-        self.assertIsNone(g.baseline)
-        g.feed(1.02)
-        self.assertAlmostEqual(g.baseline, 1.01)
-        feed(g, [3.0] * 100)
-        self.assertAlmostEqual(g.baseline, 1.01)
+    def test_return_to_initial_temperature_restarts_event_detection(self):
+        for mode, value in (("combustion", 2.), ("dissolution", .2)):
+            r=Replay().baseline(mode)
+            r.repeat(value, 5)
+            self.assertIsNone(r.repeat(1., 400))
+            self.assertEqual(r.guide.phase, "waiting_change")
 
-    def test_full_dissolution_sequence(self):
-        g = self.baseline()
-        self.assertIsNone(feed(g, [1.0] * 100))
-        self.assertIsNone(feed(g, [0.2] * 5))
-        self.assertIsNone(feed(g, [0.2] * 79))
-        self.assertEqual(g.feed(0.2), "start_heating")
-        self.assertEqual(g.feed(0.1), "start_heating")
-        g.start_heating()
-        self.assertIsNone(feed(g, [0.69] * 8))
-        self.assertIsNone(feed(g, [0.7] * 4))
-        self.assertEqual(g.feed(0.7), "stop_heating")
-        g.stop_heating()
-        self.assertIsNone(feed(g, [0.8, 0.84] * 40))
-        self.assertIsNone(feed(g, [0.9] * 79))
-        self.assertEqual(g.feed(0.9), "stop_recording")
-        g.stop()
-        self.assertIsNone(feed(g, [0.9] * 100))
+    def test_transient_event_is_not_enough(self):
+        r=Replay().baseline("combustion")
+        r.repeat(2.,4)
+        self.assertIsNone(r.repeat(1.,400))
+        self.assertEqual(r.guide.phase,"waiting_change")
 
-    def test_small_drop_requires_actual_heating_rise(self):
-        g = self.baseline()
-        feed(g, [0.9] * 85)
-        self.assertEqual(g.hint, "start_heating")
-        g.start_heating()
-        self.assertIsNone(feed(g, [0.9] * 20))
-        self.assertEqual(feed(g, [0.95] * 5), "stop_heating")
-
-    def test_combustion_needs_sustained_rise_then_new_stable_window(self):
-        g = self.baseline("combustion")
-        self.assertIsNone(feed(g, [1.0] * 100))
-        feed(g, [2.0] * 4 + [1.0] * 80)
-        self.assertIsNone(g.hint)
-        feed(g, [1.1] * 5)
-        self.assertIsNone(feed(g, [1.1] * 79))
-        self.assertEqual(g.feed(1.13), "stop_recording")
-
-    def test_transient_change_returning_to_baseline_does_not_qualify(self):
-        for mode, excursion in (("combustion", 2.0), ("dissolution", 0.2)):
-            g = self.baseline(mode)
-            feed(g, [excursion] * 5)
-            self.assertIsNone(feed(g, [1.0] * 100))
-            self.assertEqual(g.phase, "waiting_change")
-
-    def test_invalid_sample_clears_hint_and_stability_window(self):
+    def test_invalid_sample_resets_hint_and_time_window(self):
         for invalid in (None, float("nan"), float("inf")):
-            g = self.baseline()
-            feed(g, [0.2] * 85)
-            self.assertEqual(g.hint, "start_heating")
-            self.assertIsNone(g.feed(invalid))
-            self.assertIsNone(feed(g, [0.2] * 79))
-            self.assertEqual(g.feed(0.2), "start_heating")
+            r=Replay().baseline()
+            self.assertEqual(r.repeat(.2,335), "start_heating")
+            self.assertIsNone(r.feed(invalid))
+            self.assertIsNone(r.repeat(.2,100))
+            self.assertEqual(r.repeat(.2,230), "start_heating")
 
-    def test_manual_stage_changes_and_new_run_reset(self):
-        g = self.baseline()
-        g.start_heating()
-        g.stop_heating()
-        self.assertEqual(feed(g, [1.0] * 80), "stop_recording")
-        g.reset()
-        self.assertIsNone(g.baseline)
-        self.assertEqual(g.phase, "idle")
-        self.assertIsNone(g.hint)
+    def test_baseline_uses_thirty_consecutive_valid_points(self):
+        r=Replay(); r.guide.start("dissolution")
+        r.repeat(10., 15); r.feed(None)
+        r.repeat(1.,29)
+        self.assertIsNone(r.guide.baseline)
+        r.feed(1.)
+        self.assertEqual(r.guide.baseline,1.)
+        r.repeat(2.,40)
+        self.assertEqual(r.guide.baseline,1.)
+
+    def test_gap_and_nonmonotonic_times_cannot_leave_a_hint(self):
+        for skip in (10., -1., 0.):
+            r=Replay().baseline()
+            r.repeat(.2,335)
+            self.assertEqual(r.guide.hint,"start_heating")
+            self.assertIsNone(r.guide.feed(.2,r.time+skip))
+            self.assertIsNone(r.guide.hint)
+
+    def test_clock_is_injected_for_live_sampling(self):
+        r=Replay()
+        g=AcquisitionGuide(clock=lambda:r.time)
+        for i in range(170):
+            r.time=i*.55
+            g.feed(1.)
+        self.assertEqual(g.hint,"start_recording")
+
+    def test_heating_target_still_requires_actual_rise_and_is_not_latched(self):
+        r=Replay().baseline()
+        r.repeat(.9,335)
+        r.guide.start_heating()
+        self.assertIsNone(r.repeat(.9,20))
+        self.assertEqual(r.repeat(.95,5),"stop_heating")
+        self.assertIsNone(r.feed(.94))
+
+    def test_manual_heating_before_baseline_does_not_crash_or_invent_target(self):
+        r=Replay(); r.guide.start("dissolution")
+        r.guide.start_heating()
+        self.assertIsNone(r.repeat(.9,100))
+        self.assertEqual(r.guide.status_key[1],"no_baseline")
+        r.guide.stop_heating()
+        self.assertEqual(r.repeat(1.,330),"stop_recording")
+        r.guide.reset()
+        self.assertIsNone(r.guide.baseline)
+        self.assertEqual(r.guide.phase,"idle")
+
+
+class RelativeDriftTests(unittest.TestCase):
+    def run_linear(self, reference, slope, direction=1, require_reference=True):
+        c=GuideConfig()
+        d=LinearStability(c,120,60)
+        ever_ready=False
+        for i in range(501):
+            t=i*.55
+            r=d.feed(t,2+slope*t/60,reference_slope=reference,
+                     direction=direction,require_reference=require_reference)
+            ever_ready |= r.ready
+        return d,ever_ready
+
+    def test_environmental_drift_larger_than_old_limit_can_pass(self):
+        for slope in (.02,-.02):
+            d,ready=self.run_linear(slope,slope)
+            self.assertTrue(ready)
+            self.assertTrue(d.result.ready)
+
+    def test_linear_residual_heating_rejected_even_with_zero_fit_residual(self):
+        d,ready=self.run_linear(.0006,.019)
+        self.assertFalse(ready)
+        self.assertEqual(d.result.reason,'excess_drift')
+        self.assertLess(d.result.residual_rms_k,1e-12)
+        self.assertGreater(d.result.excess_drift_k_min,d.result.excess_limit_k_min)
+
+    def test_difference_near_zero_reference_does_not_divide_by_zero(self):
+        for slope,expected in ((.005,True),(.007,False)):
+            _,ready=self.run_linear(0.,slope)
+            self.assertEqual(ready,expected)
+
+    def test_relative_allowance_for_nonzero_environmental_drift(self):
+        d,ready=self.run_linear(.02,.028)
+        self.assertTrue(ready)
+        self.assertAlmostEqual(d.result.excess_limit_k_min,.01)
+
+    def test_dissolution_allows_linear_rewarming_but_rejects_extra_cooling(self):
+        self.assertTrue(self.run_linear(.011,.020,direction=-1)[1])
+        d,ready=self.run_linear(.011,-.009,direction=-1)
+        self.assertFalse(ready)
+        self.assertEqual(d.result.reason,'excess_drift')
+
+    def test_combustion_cooling_is_allowed_but_absolute_guardrail_remains(self):
+        self.assertTrue(self.run_linear(.003,-.02)[1])
+        d,ready=self.run_linear(.003,-.06)
+        self.assertFalse(ready)
+        self.assertEqual(d.result.reason,'drift')
+
+    def test_missing_reference_uses_conservative_limit(self):
+        self.assertTrue(self.run_linear(None,.005)[1])
+        d,ready=self.run_linear(None,.02)
+        self.assertFalse(ready)
+        self.assertEqual(d.result.reason,'missing_reference')
+
+    def test_reference_is_pre_event_frozen_and_reset_between_runs(self):
+        r=Replay();r.guide.start('combustion')
+        for _ in range(100):r.feed(1+.003*(r.time+r.step)/60)
+        initial=r.guide.reference_slope
+        self.assertAlmostEqual(initial,.003,places=10)
+        for _ in range(600):r.feed(2+.02*(r.time+r.step)/60)
+        self.assertEqual(r.guide.reference_slope,initial)
+        self.assertIsNone(r.guide.hint)
+        self.assertEqual(r.guide.stability.result.reason,'excess_drift')
+        r.guide.interrupt()
+        self.assertEqual(r.guide.reference_slope,initial)
+        r.guide.start('combustion')
+        self.assertIsNone(r.guide.reference_slope)
+
+    def test_early_event_does_not_become_the_initial_reference(self):
+        r=Replay().baseline('combustion')
+        self.assertEqual(r.guide.status_key[1], 'reference_pending')
+        self.assertIn('暂缓加料或点火', r.guide.status)
+        r.repeat(2.,600)
+        self.assertIsNone(r.guide.reference_slope)
+
+    def test_gap_cannot_complete_initial_reference(self):
+        r=Replay().baseline('combustion')
+        r.time+=10
+        r.repeat(1.,30)
+        self.assertIsNone(r.guide.reference_slope)
+        r.repeat(1.,30)
+        self.assertAlmostEqual(r.guide.reference_slope,0.)
+
+    def test_relative_condition_failure_revokes_and_restarts_confirmation(self):
+        c=GuideConfig();d=LinearStability(c,120,60)
+        for i in range(400):d.feed(i*.55,1.,reference_slope=0.,direction=1)
+        self.assertTrue(d.result.ready)
+        # Same points, a stricter reference illustrates that all conditions
+        # participate in the confirmation timer, not a post-hoc overlay.
+        r=d.feed(220.,1.,reference_slope=-.02,direction=1)
+        self.assertEqual(r.reason,'excess_drift')
+        self.assertIsNone(d.qualified_since)
+        r=d.feed(220.55,1.,reference_slope=0.,direction=1)
+        self.assertEqual(r.reason,'confirming')
+        self.assertEqual(r.confirmed_s,0.)
 
 
 class GUIIntegrationTests(unittest.TestCase):

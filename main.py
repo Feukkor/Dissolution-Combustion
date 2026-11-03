@@ -2,9 +2,8 @@
 '''
 
 快速启动:
-    运行"main-win.exe"或"main-mac.app"即可自动运行main.py
-    如出现异常情况，尝试运行"requirements-win.exe"或"requirements-mac.app"安装或更新依赖库
-    main-win/mac需要与main.py在同一目录下，requirements-win/mac需要与requirements.txt在同一目录下
+    Windows 发布版运行 Dissolution-Combustion-v2.2.5.exe，无需 Python。
+    源码安装依赖后运行 python main.py，构建步骤见 docs/Windows-Build.md。
 
 图形界面的可调参数:
     dx: 积分、绘图步长

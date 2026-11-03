@@ -1,33 +1,19 @@
-# Windows 构建与验证
+# Windows 构建与验证（v2.2.5）
 
-本次构建环境为 CPython 3.12.14 x64，项目虚拟环境是 `.venv`。`.venv` 已在项目目录中创建好，可直接使用；如果换机器或删除了 `.venv`，用任意 CPython 3.12 x64 重新创建即可。
-
-`requirements-windows.txt` 固定了本次验证使用的直接及间接依赖。原项目使用的 `scipy.integrate.simps` 和 Matplotlib `tostring_rgb` 在较新版本中已移除，因此本构建采用 SciPy 1.13.1、Matplotlib 3.8.4、NumPy 1.26.4，而不是无版本限制地升级。
-
-在项目目录使用 PowerShell：
+从包含 `main.py` 的源码根目录执行以下 PowerShell 命令。需要 Python 3.12 x64；运行已打包的 EXE 不需要安装 Python。连接仪器仍需要相应 USB 串口驱动，程序应放在可写目录中运行。
 
 ```powershell
-# 仅在新环境首次创建时运行
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-windows.txt
-
-# 验证依赖、回归测试和真实 Tk 界面（无串口硬件）
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe tests/gui_smoke.py
-
-# 运行源码
-.\.venv\Scripts\python.exe main.py
-
-# 打包单文件 Windows EXE
 .\.venv\Scripts\python.exe build_windows.py
-.\.venv\Scripts\python.exe tests/packaged_smoke.py dist/Dissolution-Combustion-v2.2.6-test.exe
+.\.venv\Scripts\python.exe tests/packaged_smoke.py dist/Dissolution-Combustion-v2.2.5.exe
 ```
 
-生成文件：`dist/Dissolution-Combustion-v2.2.6-test.exe`。窗口标题包含 `v2.2.6-test`，版本标识集中在 `app_version.py` 中。应用图标使用 `chem.ico`；图标和 Tk、NumPy、SciPy 等运行依赖已内置，目标电脑不需要安装 Python。串口仪器仍可能需要安装其 USB 驱动。
+生成文件：`dist/Dissolution-Combustion-v2.2.5.exe`。版本由 `app_version.py` 统一管理。图标、Tk 和科学计算依赖随单文件 EXE 打包；不要将虚拟环境、build、dist、缓存或实验原始数据提交到源码仓库，EXE 可作为发布附件分发。
 
-2026-10-31 验证结果：36 项回归测试通过；真实 Tk 界面的采集按钮、彩虹动画、溶解热和燃烧热模拟曲线计算、积分溶解热拟合、CSV/PNG 输出及异常文件提示通过；打包后的 EXE 在无 Python 环境的临时目录中启动、显示主窗口并正常关闭（退出码 0）。此前 test.1 的实物设备测试由用户反馈通过；新增功能仍需用户实机确认。
+本版 Windows 依赖锁定于 `requirements-windows.txt`，使用 SciPy 1.14.1、NumPy 2.2.6、Matplotlib 3.9.4、ttkbootstrap 1.10.1 和 PyInstaller 6.22.3。积分采用 `simpson(..., x=...)`；源码也已在 SciPy 1.13.1 下回归验证。实际构建使用 Python 3.12.4 x64。
 
-本次 EXE 大小 73,958,163 字节（约 70.5 MiB）。体积取决于 Python、科学计算库及打包工具版本，不能仅按旧包体积判断是否正常。
-
-PyInstaller 不提供 Windows 到 macOS 的原生交叉打包。本项目的 macOS `.app` 应在 macOS 主机或 macOS CI 上安装依赖、构建并验证。
+验证范围包括主程序 63 项单元测试、真实 Tk 的彩虹提示出现与撤销、原始数据导入、两类实验计算、拟合及 CSV/PNG 导出。`packaged_smoke.py` 清除 Python 相关环境变量并缩减 PATH，检查指定 EXE 的版本窗口和正常退出。此检查不等于实际串口仪器验证。
