@@ -1128,7 +1128,7 @@ class Screen1_Data(Screen):
         self.guidance_label.pack(fill="both", expand=True)
         self.guidance_frame.bind("<Configure>", lambda event:
                                  self.guidance_label.configure(wraplength=max(180, event.width - 16)))
-        self.right_paned.add(self.guidance_frame, weight=0)
+        self.right_paned.add(self.guidance_frame, weight=8)
         self._guide_log_key = None
         self._guide_log_time = None
         self.addTextBox(15)

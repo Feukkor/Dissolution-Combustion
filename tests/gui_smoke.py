@@ -32,6 +32,11 @@ def run():
             try:
                 root.update()
                 screen = gui.DATA_CONFIG["screen"]
+                # A zero-weight pane collapses to 1 px once the window is mapped, hiding the
+                # guidance text entirely; check the configured weight rather than the height,
+                # because an unmapped window never applies the pane geometry.
+                assert int(screen.right_paned.pane(screen.guidance_frame, "weight")) > 0, \
+                    screen.right_paned.pane(screen.guidance_frame, "weight")
                 screen.button_data_start.configure(state="normal")
                 sample_time = 0.0
                 def feed_values(values):

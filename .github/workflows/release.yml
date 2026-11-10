@@ -1,0 +1,125 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows.txt
+      - name: Verify environment
+        run: python -m pip check
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: GUI smoke test
+        run: python tests/gui_smoke.py
+      - name: Mode menu switching test
+        run: python tests/menu_switch_smoke.py
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows.txt
+      - name: Build executable
+        run: python build_windows.py
+      - name: Packaged smoke test
+        run: python tests/packaged_smoke.py dist/Dissolution-Combustion-*.exe
+      - name: Generate sample data package
+        run: |
+          python tools/make_template_data.py
+          Compress-Archive -Path build/TemplateData/* -DestinationPath build/TemplateData.zip
+      - name: Build manual PDF
+        run: |
+          choco install pandoc --no-progress -y
+          refreshenv
+          python tools/build_manual_pdf.py
+      - name: Checksums
+        run: |
+          $files = @(Get-ChildItem dist/*.exe) + @(Get-Item build/TemplateData.zip)
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content build/SHA256SUMS.txt -Encoding ascii
+          Get-Content build/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: |
+            dist/*.exe
+            build/TemplateData.zip
+            build/SHA256SUMS.txt
+            manual/Manual.pdf
+
+  macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements.txt
+      - name: Build app bundle
+        run: python build_macos.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Archive app
+        run: |
+          ls -la dist
+          cd dist
+          tar -czf "../build-Dissolution-Combustion-mac.tar.gz" ./*.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-assets
+          path: build-Dissolution-Combustion-mac.tar.gz
+
+  publish:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      # Needed for body_path: the release text comes from the repository.
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: List assets
+        run: ls -lh assets
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/*.exe
+            assets/*.tar.gz
+            assets/*.zip
+            assets/SHA256SUMS.txt
+            assets/Manual.pdf
+          body_path: docs/Release-v2.2.5.md
+          draft: true
+          generate_release_notes: false

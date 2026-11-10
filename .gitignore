@@ -144,3 +144,9 @@ tmp/*
 
 # Release build artifacts (distribute via GitHub Releases)
 *.exe
+
+# Manual figures captured from the running application
+!manual/screen*-v225.png
+
+# Manual PDF build intermediates
+manual/_build/
