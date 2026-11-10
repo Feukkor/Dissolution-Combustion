@@ -330,7 +330,7 @@ pipenv run pyinstaller --hidden-import=gui --hidden-import=expserial --hidden-im
 - `std_limit`：自动寻找平台期的标准差阈值，默认为0.005
 - `time_lower_limit`：自动寻找平台期的最小时间窗口，单位秒，默认为30
 - `time_upper_limit`：自动寻找平台期的最大时间窗口，单位秒，默认为40
-- `width_height_inches`：保存图片尺寸，单位英尺，默认为10x6
+- `width_height_inches`：保存图片尺寸，单位英寸，默认为10x6
 - `dpi`：保存图片DPI，默认为600
 
 变量**SCREEN_CONFIG**：主界面样式
@@ -479,7 +479,7 @@ pipenv run pyinstaller --hidden-import=gui --hidden-import=expserial --hidden-im
 - 初始化参数 `std_limit`：自动寻找平台期的标准差阈值，默认为0.005
 - 初始化参数 `time_lower_limit`：自动寻找平台期的最小时间窗口，单位秒，默认为30
 - 初始化参数 `time_upper_limit`：自动寻找平台期的最大时间窗口，单位秒，默认为40
-- 初始化参数 `width_height_inches`：保存图片尺寸，单位英尺，默认为10x6
+- 初始化参数 `width_height_inches`：保存图片尺寸，单位英寸，默认为10x6
 - 初始化参数 `dpi`：保存图片DPI，默认为600
 - 方法 `change_mode()`：切换界面
 
@@ -494,5 +494,5 @@ pipenv run pyinstaller --hidden-import=gui --hidden-import=expserial --hidden-im
 - 变量 `std_limit`：自动寻找平台期的标准差阈值，默认为0.005
 - 变量 `time_lower_limit`：自动寻找平台期的最小时间窗口，单位秒，默认为30
 - 变量 `time_upper_limit`：自动寻找平台期的最大时间窗口，单位秒，默认为40
-- 变量 `width_height_inches`：保存图片尺寸，单位英尺，默认为10x6
+- 变量 `width_height_inches`：保存图片尺寸，单位英寸，默认为10x6
 - 变量 `dpi`：保存图片DPI，默认为600

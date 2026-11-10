@@ -141,3 +141,6 @@ tmp/*
 /results/
 /simulator/
 /app/v2.2.5-test.1/
+
+# Release build artifacts (distribute via GitHub Releases)
+*.exe

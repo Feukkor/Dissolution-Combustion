@@ -6,9 +6,9 @@
 
 ## v2.2.5
 
-包含文件导入与原始数据保护、基于数据的实验阶段操作提示、会话内量热计常数记忆、更好的拟合区间自动选点算法。完整记录见 [history.md](history.md)。
+本版增加了数据导入检查与原始数据保护、依据数据给出的实验阶段操作提示、同一次运行内的量热计常数记忆，并改进了拟合区间的自动选点。完整记录见 [history.md](history.md)。
 
-Windows 用户可运行发布附件中的 `Dissolution-Combustion-v2.2.5.exe`，无需安装 Python。请将程序放在可写目录；连接仪器需要相应 USB 串口驱动。
+Windows 用户可直接运行发布附件中的 `Dissolution-Combustion-v2.2.5.exe`，无需安装 Python。程序应放在可写的目录下运行；连接仪器仍需安装对应的 USB 串口驱动。
 
 - [操作手册](manual/Manual.md)
 - [平台时长、判据及提前操作的影响](docs/LinearBaseline-Guidance.md)
