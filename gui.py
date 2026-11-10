@@ -669,6 +669,7 @@ class Screen(ttk.Frame):
         DATA_CONFIG["screen"] = self
         DATA_CONFIG["csv_len"] = -1
         DATA_CONFIG["csv"] = None
+        self._change_mode_job = None
         self.buttons()
         self.place(relx=0, rely=0, relwidth=1, relheight=1)
         main_paned = ttk.PanedWindow(self, orient="horizontal")
@@ -756,6 +757,12 @@ class Screen(ttk.Frame):
                 button.invoke()
 
     def change_mode(self, *args):
+        # 菜单命令执行时下拉菜单尚未收起，立即销毁界面会连带销毁菜单，导致Tk卡死，故延后切换
+        if self._change_mode_job is None:
+            self._change_mode_job = self.after_idle(self._do_change_mode)
+
+    def _do_change_mode(self):
+        self._change_mode_job = None
         DATA_CONFIG['app'].change_mode()
 
     @explain_load_failure
@@ -1020,6 +1027,9 @@ class Screen(ttk.Frame):
             DATA_CONFIG["window"].bind(shortcut, self.button_shortcut)
 
     def destroy(self):
+        if self._change_mode_job is not None:
+            self.after_cancel(self._change_mode_job)
+            self._change_mode_job = None
         for shortcut in self.SHORTCUTS:
             DATA_CONFIG["window"].unbind(shortcut)
         super().destroy()
@@ -1210,11 +1220,6 @@ class Screen1_Data(Screen):
     def set_entry_state(self):
         self.entries_frame.set_all_states("disabled")
         self.entries_frame.set_states("normal", self.entry_state[self.measure_mode.get()])
-
-    def change_mode(self, *args):
-        if self.comport is not None:
-            self.comport.close()
-        super().change_mode()
 
     def destroy(self):
         self.rainbow.clear()
