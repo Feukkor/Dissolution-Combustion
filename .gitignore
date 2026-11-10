@@ -150,3 +150,7 @@ tmp/*
 
 # Manual PDF build intermediates
 manual/_build/
+
+# Release staging directories used by the CI workflow
+/release/
+/assets/

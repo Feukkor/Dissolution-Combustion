@@ -81,20 +81,21 @@ jobs:
           echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
       - name: Build manual PDF
         run: .\.venv\Scripts\python.exe tools/build_manual_pdf.py
-      - name: Checksums
+      # upload-artifact keeps the directory layout of the matched paths, so collect
+      # everything into one flat directory. Otherwise the downloaded assets end up
+      # nested and the release globs never match them.
+      - name: Collect release assets
         run: |
-          $files = @(Get-ChildItem dist/*.exe) + @(Get-Item build/TemplateData.zip) + @(Get-Item manual/Manual.pdf)
-          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content build/SHA256SUMS.txt -Encoding ascii
-          Get-Content build/SHA256SUMS.txt
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item dist/*.exe release/
+          Copy-Item build/TemplateData.zip release/
+          Copy-Item manual/Manual.pdf release/
+          Get-ChildItem release | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows-assets
-          path: |
-            dist/*.exe
-            build/TemplateData.zip
-            build/SHA256SUMS.txt
-            manual/Manual.pdf
+          path: release/*
+          if-no-files-found: error
 
   macos:
     needs: test
@@ -124,10 +125,14 @@ jobs:
           ls -la dist
           cd dist
           tar -czf "../build-Dissolution-Combustion-mac.tar.gz" ./*.app
+          mkdir -p ../release
+          mv "../build-Dissolution-Combustion-mac.tar.gz" ../release/
+          ls -la ../release
       - uses: actions/upload-artifact@v4
         with:
           name: macos-assets
-          path: build-Dissolution-Combustion-mac.tar.gz
+          path: release/*
+          if-no-files-found: error
 
   publish:
     needs: [windows, macos]
@@ -142,14 +147,29 @@ jobs:
           merge-multiple: true
       - name: List assets
         run: ls -lh assets
+      # Check the files exist before publishing: a release step that silently
+      # matches nothing still reports success.
+      - name: Verify expected assets
+        run: |
+          set -e
+          fail=0
+          for pattern in '*.exe' '*.tar.gz' '*.zip' '*.pdf'; do
+            if ! compgen -G "assets/$pattern" > /dev/null; then
+              echo "::error::missing release asset matching $pattern"
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: Generate checksums
+        run: |
+          cd assets
+          rm -f SHA256SUMS.txt
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            assets/*.exe
-            assets/*.tar.gz
-            assets/*.zip
-            assets/SHA256SUMS.txt
-            assets/Manual.pdf
+          files: assets/*
+          fail_on_unmatched_files: true
           body_path: docs/Release-v2.2.5.md
           draft: true
           generate_release_notes: false
