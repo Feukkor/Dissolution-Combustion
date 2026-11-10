@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+# The Windows CI console cannot encode Chinese mode names, so always write UTF-8.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gui
 

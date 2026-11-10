@@ -10,6 +10,10 @@ import tempfile
 import time
 from unittest.mock import patch
 
+# The Windows CI console uses a legacy code page that cannot encode the Chinese
+# mode names printed below, so always write UTF-8 regardless of the console.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gui
 from data_loading import RAW_FIELDS, FIT_FIELDS

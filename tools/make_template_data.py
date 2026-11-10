@@ -1,4 +1,4 @@
-﻿"""Rebuild the TemplateData sample package from the recorded sample runs.
+"""Rebuild the TemplateData sample package from the recorded sample runs.
 
 Sources live in ``samples/`` and use the current parameter names. Each sample is
 opened, calculated and saved through the GUI, so the exported CSV/PNG pair comes
@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gui
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "samples"

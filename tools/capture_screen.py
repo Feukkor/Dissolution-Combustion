@@ -1,4 +1,4 @@
-﻿"""Capture a screenshot of a real application screen for the manual.
+"""Capture a screenshot of a real application screen for the manual.
 
 Renders the requested screen in a real Tk window, optionally after feeding the
 guidance panel some readings, then saves a PNG of the window client area.
@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gui
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)

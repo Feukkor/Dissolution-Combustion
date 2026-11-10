@@ -12,6 +12,10 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
+    env:
+      # Keep console output UTF-8 so Chinese mode names print correctly. The test
+      # scripts also reconfigure their own streams, for direct local runs.
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,6 +51,8 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

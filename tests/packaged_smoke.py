@@ -11,6 +11,9 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app_version import WINDOW_TITLE
 
+# The Windows CI console cannot encode the Chinese window title, so write UTF-8.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 def run(executable):
     executable = Path(executable).resolve()

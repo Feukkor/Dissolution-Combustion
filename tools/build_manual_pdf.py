@@ -11,6 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# The Windows CI console cannot encode the Chinese messages below, so write UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parents[1]
 MANUAL = ROOT / "manual"
 BUILD = MANUAL / "_build"
